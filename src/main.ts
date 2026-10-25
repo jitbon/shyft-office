@@ -332,6 +332,7 @@ function refreshCallPanel() {
     return;
   }
   const streams = media.streams();
+  const talking = media.talking();
   const tiles: TileInfo[] = [];
   for (const id of conversation.members) {
     const p = id === me.id ? me : others.get(id);
@@ -344,6 +345,7 @@ function refreshCallPanel() {
       avatar: p.avatar.frames.down[0],
       stream: self ? media.localVideo() : streams.get(p.id) ?? null,
       self,
+      talking: self ? media.selfTalking() : talking.has(p.id),
     });
   }
   callPanel.render(conversation.label, tiles, convFull);

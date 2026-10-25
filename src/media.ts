@@ -1,4 +1,5 @@
 import type { Link } from '../shared/protocol';
+import { HIGHLIGHT, SPEAKING, VoiceDetector, rmsLevel } from './voice';
 
 /**
  * Everything about live audio/video between linked people. The rest of the client only
@@ -27,15 +28,16 @@ export interface MediaTransport {
   streams(): Map<string, MediaStream>;
   /** The local camera, when it is on. */
   localVideo(): MediaStream | null;
+  /** Peers whose voice you can hear right now (after distance volume), for the talking outline. */
+  talking(): Set<string>;
+  /** Whether your own microphone is picking up your voice right now. */
+  selfTalking(): boolean;
   local(): { mic: boolean; cam: boolean };
   close(): void;
 }
 
 /** How long a peer's connection may stay down before they no longer look present. */
 const LOST_AFTER_MS = 5000;
-
-/** Microphone level (0-1 RMS) that counts as speech. */
-const SPEECH_LEVEL = 0.02;
 
 interface Signal {
   description?: RTCSessionDescriptionInit;
@@ -55,6 +57,10 @@ interface Peer {
   lost: boolean;
   lostTimer?: number;
   gain?: GainNode;
+  /** Measures what you actually hear from this peer, after their distance volume. */
+  analyser?: AnalyserNode;
+  samples?: Uint8Array<ArrayBuffer>;
+  voice: VoiceDetector;
   source?: MediaStreamAudioSourceNode;
   audioEl?: HTMLAudioElement;
 }
@@ -74,6 +80,8 @@ export class MeshTransport implements MediaTransport {
   private videoAllowed = true;
   private meter: { timer: number; source: MediaStreamAudioSourceNode } | null = null;
   private speaking = false;
+  private selfVoice = new VoiceDetector(HIGHLIGHT);
+  private levelsTimer = 0;
 
   setIceServers(servers: RTCIceServer[]) {
     this.ice = servers;
@@ -177,8 +185,18 @@ export class MeshTransport implements MediaTransport {
     return this.videoTrack ? new MediaStream([this.videoTrack]) : null;
   }
 
+  talking() {
+    return new Set([...this.peers].filter(([, p]) => !p.lost && p.voice.talking).map(([id]) => id));
+  }
+
+  selfTalking() {
+    return this.selfVoice.talking;
+  }
+
   close() {
     for (const id of [...this.peers.keys()]) this.drop(id);
+    clearInterval(this.levelsTimer);
+    this.levelsTimer = 0;
     this.stopMeter();
     this.audioTrack?.stop();
     this.videoTrack?.stop();
@@ -230,7 +248,7 @@ export class MeshTransport implements MediaTransport {
     }
   }
 
-  /** Watches the microphone level: speech is loud for 300 ms; it ends after 600 ms of quiet. */
+  /** Watches the microphone level, for the server's "speaking" flag and your own talking outline. */
   private startMeter() {
     if (this.meter || !this.audioTrack) return;
     const ctx = this.audioContext();
@@ -239,23 +257,14 @@ export class MeshTransport implements MediaTransport {
     analyser.fftSize = 512;
     source.connect(analyser); // not connected onward, so you never hear yourself
     const samples = new Uint8Array(analyser.fftSize);
-    let loudSince = 0;
-    let quietSince = 0;
+    const speech = new VoiceDetector(SPEAKING);
+    this.selfVoice.reset();
     const timer = window.setInterval(() => {
       analyser.getByteTimeDomainData(samples);
-      let sum = 0;
-      for (const v of samples) sum += ((v - 128) / 128) ** 2;
-      const loud = Math.sqrt(sum / samples.length) > SPEECH_LEVEL;
+      const level = rmsLevel(samples);
       const now = performance.now();
-      if (loud) {
-        quietSince = 0;
-        loudSince ||= now;
-        if (!this.speaking && now - loudSince >= 300) this.setSpeaking(true);
-      } else {
-        loudSince = 0;
-        quietSince ||= now;
-        if (this.speaking && now - quietSince >= 600) this.setSpeaking(false);
-      }
+      if (speech.update(level, now)) this.setSpeaking(speech.talking);
+      if (this.selfVoice.update(level, now)) this.onChange(); // your own outline
     }, 100);
     this.meter = { timer, source };
   }
@@ -266,6 +275,10 @@ export class MeshTransport implements MediaTransport {
     this.meter.source.disconnect();
     this.meter = null;
     this.setSpeaking(false);
+    if (this.selfVoice.talking) {
+      this.selfVoice.reset();
+      this.onChange();
+    }
   }
 
   private setSpeaking(on: boolean) {
@@ -287,6 +300,7 @@ export class MeshTransport implements MediaTransport {
       videoTx: pc.addTransceiver('video', { direction: 'sendrecv' }),
       stream: new MediaStream(),
       lost: false,
+      voice: new VoiceDetector(HIGHLIGHT),
     };
     this.peers.set(id, peer);
     void peer.audioTx.sender.replaceTrack(this.audioTrack);
@@ -342,7 +356,27 @@ export class MeshTransport implements MediaTransport {
     peer.source = ctx.createMediaStreamSource(peer.stream);
     peer.gain = ctx.createGain();
     peer.gain.gain.value = 0; // silent until the first distance update
-    peer.source.connect(peer.gain).connect(ctx.destination);
+    // The analyser sits after the volume, so the outline only lights for what you can actually hear.
+    peer.analyser = ctx.createAnalyser();
+    peer.analyser.fftSize = 512;
+    peer.samples = new Uint8Array(peer.analyser.fftSize);
+    peer.source.connect(peer.gain).connect(peer.analyser).connect(ctx.destination);
+    this.watchLevels();
+  }
+
+  /** One loop, ten times a second, reads every peer's level and updates who is talking. */
+  private watchLevels() {
+    if (this.levelsTimer) return;
+    this.levelsTimer = window.setInterval(() => {
+      const now = performance.now();
+      let changed = false;
+      for (const p of this.peers.values()) {
+        if (!p.analyser || !p.samples) continue;
+        p.analyser.getByteTimeDomainData(p.samples);
+        if (p.voice.update(rmsLevel(p.samples), now)) changed = true;
+      }
+      if (changed) this.onChange();
+    }, 100);
   }
 
   private drop(id: string) {
@@ -354,6 +388,11 @@ export class MeshTransport implements MediaTransport {
     peer.pc.close();
     peer.source?.disconnect();
     peer.gain?.disconnect();
+    peer.analyser?.disconnect();
+    if (![...this.peers.values()].some((p) => p.analyser)) {
+      clearInterval(this.levelsTimer);
+      this.levelsTimer = 0;
+    }
     if (peer.audioEl) peer.audioEl.srcObject = null;
   }
 }

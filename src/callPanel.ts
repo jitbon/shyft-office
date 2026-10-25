@@ -9,6 +9,8 @@ export interface TileInfo {
   /** The person's video, when they have it on. */
   stream: MediaStream | null;
   self: boolean;
+  /** Their voice can be heard right now: the tile gets a green outline. */
+  talking: boolean;
 }
 
 interface Tile {
@@ -75,6 +77,7 @@ export class CallPanel {
   }
 
   private update(tile: Tile, info: TileInfo) {
+    tile.el.classList.toggle('talking', info.talking);
     const hasVideo = info.cam && !!info.stream && info.stream.getVideoTracks().length > 0;
     tile.video.hidden = !hasVideo;
     const showing = (tile.video.srcObject as MediaStream | null)?.getVideoTracks()[0];

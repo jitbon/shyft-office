@@ -282,6 +282,9 @@ button.off { color: var(--muted); text-decoration: line-through; }
   place-items: center;
   overflow: hidden;
 }
+/* Like a video call: whoever you can hear speaking gets a green outline. */
+.tile { transition: border-color 0.12s, box-shadow 0.12s; }
+.tile.talking { border-color: #3ddc84; box-shadow: 0 0 0 2px #3ddc84, 0 0 10px rgba(61, 220, 132, 0.55); }
 .tile video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .tile video.self { transform: scaleX(-1); }
 .tile canvas { width: 64px; height: 64px; image-rendering: pixelated; }
