@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Shyft Office</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+
+    <div id="hud" hidden>
+      <div id="zone" class="panel" hidden></div>
+      <div id="people" class="panel"></div>
+      <div id="modes" class="panel">
+        <button data-mode="2d">2D</button>
+        <button data-mode="3d">1st person</button>
+        <button id="micBtn" class="off" title="Microphone (M)">Mic</button>
+        <button id="camBtn" class="off" title="Camera (C)">Cam</button>
+        <button id="deskBtn" title="Go to your desk, or claim one (G)">Desk</button>
+        <button id="characterBtn" title="Change your character">Character</button>
+        <button id="statusBtn" title="Set your status (Ctrl+U toggles Do Not Disturb)">Status</button>
+        <button id="adminBtn" title="Office admin" hidden>Admin</button>
+      </div>
+      <div id="adminPanel" class="panel" hidden></div>
+      <div id="statusPanel" class="panel" hidden></div>
+      <div id="areaBanner" class="panel" hidden></div>
+      <div id="deskCard" class="panel" hidden></div>
+      <div id="deskHint" class="panel" hidden></div>
+      <div id="notices"></div>
+      <div id="callPanel" class="panel" hidden></div>
+      <div id="chat" class="panel">
+        <div id="chatLog"></div>
+        <div class="chatRow">
+          <button id="chatScope" type="button" title="Who hears your messages" hidden>Nearby</button>
+          <input id="chatInput" placeholder="Press Enter to chat" maxlength="300" autocomplete="off" />
+        </div>
+      </div>
+      <div id="help" class="panel"></div>
+      <div id="lockHint" hidden>Click to look around with the mouse</div>
+    </div>
+
+    <div id="join">
+      <form id="joinForm" class="card">
+        <h1>Shyft Office</h1>
+        <canvas id="preview" width="96" height="96"></canvas>
+        <label>Name <input id="name" maxlength="24" placeholder="Your name" autocomplete="nickname" /></label>
+        <div class="tabs">
+          <button type="button" id="tabBuiltIn" class="on">Built-in</button>
+          <button type="button" id="tabCustom">Custom</button>
+        </div>
+        <div id="panelBuiltIn">
+          <div class="row"><span>Shirt</span><div id="shirts" class="swatches"></div></div>
+          <div class="row"><span>Hair</span><div id="hairs" class="swatches"></div></div>
+          <div class="row"><span>Skin</span><div id="skins" class="swatches"></div></div>
+        </div>
+        <div id="panelCustom" hidden>
+          <div class="row"><span>Whole</span><div id="sheets" class="choices"></div></div>
+          <div id="layers"></div>
+          <div id="customHint" class="hint"></div>
+        </div>
+        <button type="submit" class="primary">Enter office</button>
+        <button type="button" id="joinCancel" hidden>Cancel</button>
+      </form>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
