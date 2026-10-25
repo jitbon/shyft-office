@@ -1,24 +1,28 @@
 import './style.css';
-import { MAP_H, MAP_W, SPAWN, moveWithCollision, areaAt, deskAt } from '../shared/map';
+import { MAP_H, MAP_W, SPAWN, moveWithCollision, areaAt, deskAt, getWorld, onWorldChange } from '../shared/map';
 import { gainFor } from '../shared/proximity';
 import type {
   AvatarChoice, ChatScope, ClientMsg, ConversationInfo, Link, PlayerState, PlayerStatus, ServerMsg, ViewMode,
 } from '../shared/protocol';
 import { expireStatus } from '../shared/status';
 import { loadAvatar, makeAvatar } from './art';
+import { Builder } from './builder/builder';
 import { CallPanel, type TileInfo } from './callPanel';
 import { changeCharacter, getMemberId, showJoinScreen } from './join';
 import { MeshTransport } from './media';
 import {
   areaLabel, blocked, closeDeskCard, notice, deskCardOpen, deskMarkers, deskTags, facedDesk, initOfficeUi, onNotify,
-  onSprites, onWelcome, openDeskCard, predictEntry, setAdminState, setOffice, showDeskHint, updateArea, walkToMyDesk,
+  onSprites, onWelcome, openDeskCard, predictEntry, setAdminState, setBuilding, setOffice, showDeskHint, updateArea, walkToMyDesk,
 } from './office-ui';
 import { Net } from './net';
 import { session } from './session';
 import { Renderer2D, drawBubble, drawNameTag } from './render2d';
 import { Raycaster } from './render3d';
+import { defaultZoom, rescale, stepZoom } from './scale';
 import { handleSocialNotify, initStatus, refreshStatusUi } from './status';
 import { statusColor, type Player } from './types';
+import { updateCustomObjects } from './custom-objects';
+import { loadLayout, recompile } from './world-client';
 
 const WALK_SPEED = 3.6; // tiles per second
 const TURN_SPEED = 2.6; // radians per second
@@ -34,9 +38,21 @@ const chatLog = $('chatLog');
 
 const renderer2d = new Renderer2D();
 const raycaster = new Raycaster();
+const buildBtn = $<HTMLButtonElement>('buildBtn');
 const net = new Net();
 const media = new MeshTransport();
 const callPanel = new CallPanel($('callPanel'));
+const builder = new Builder({
+  canvas,
+  renderer: renderer2d,
+  panel: $('builderPanel'),
+  notice: (text, ttlMs = 3000) => notice(text, { key: 'builder', ttlMs }),
+  here: () => ({ x: me.x, y: me.y }),
+  onClose: () => {
+    renderer2d.setWorld(getWorld());
+    buildBtn.classList.remove('on');
+  },
+});
 const micBtn = $<HTMLButtonElement>('micBtn');
 const camBtn = $<HTMLButtonElement>('camBtn');
 const chatScopeBtn = $<HTMLButtonElement>('chatScope');
@@ -46,7 +62,10 @@ let me: Player;
 let joinMsg: Extract<ClientMsg, { t: 'join' }>;
 const others = new Map<string, Player>();
 let mode: ViewMode = '2d';
-let zoom = 3;
+/** Device pixels per CSS pixel; the canvas is drawn at this density so the art stays sharp on 2x screens. */
+let dpr = window.devicePixelRatio || 1;
+/** Device pixels per art pixel: always a whole number (see scale.ts). */
+let zoom = defaultZoom(dpr);
 let online = false;
 let links: Link[] = [];
 let conversation: ConversationInfo | null = null;
@@ -94,6 +113,12 @@ window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') (e.target as HTMLElement).blur();
     return;
   }
+  if (e.code === 'KeyB' && !e.repeat && session.canBuild) {
+    e.preventDefault();
+    toggleBuild();
+    return;
+  }
+  if (builder.active && builder.handleKey(e)) return;
   if (e.key === 'Enter') {
     e.preventDefault();
     keys.clear();
@@ -125,8 +150,8 @@ window.addEventListener('keydown', (e) => {
     setMode(mode === '2d' ? '3d' : '2d');
     return;
   }
-  if (mode === '2d' && (e.key === '+' || e.key === '=')) zoom = Math.min(6, zoom + 1);
-  if (mode === '2d' && (e.key === '-' || e.key === '_')) zoom = Math.max(2, zoom - 1);
+  if (mode === '2d' && (e.key === '+' || e.key === '=')) zoom = stepZoom(zoom, 1, dpr);
+  if (mode === '2d' && (e.key === '-' || e.key === '_')) zoom = stepZoom(zoom, -1, dpr);
   keys.add(e.code);
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
@@ -135,10 +160,11 @@ window.addEventListener('blur', () => keys.clear());
 canvas.addEventListener('wheel', (e) => {
   if (mode !== '2d') return;
   e.preventDefault();
-  zoom = Math.min(6, Math.max(2, zoom + (e.deltaY < 0 ? 1 : -1)));
+  zoom = stepZoom(zoom, e.deltaY < 0 ? 1 : -1, dpr);
 }, { passive: false });
 
 canvas.addEventListener('click', (e) => {
+  if (builder.active) return;
   if (mode === '3d') {
     if (document.pointerLockElement !== canvas) canvas.requestPointerLock();
     return;
@@ -150,7 +176,7 @@ canvas.addEventListener('click', (e) => {
   else closeDeskCard();
 });
 canvas.addEventListener('mousemove', (e) => {
-  if (mode !== '2d') return;
+  if (mode !== '2d' || builder.active) return;
   const t = renderer2d.tileUnder(e.clientX, e.clientY);
   hoverDesk = deskAt(t.x + 0.5, t.y + 0.5)?.id ?? null;
   canvas.style.cursor = hoverDesk ? 'pointer' : '';
@@ -171,6 +197,16 @@ chatInput.addEventListener('keydown', (e) => {
   chatInput.value = '';
   chatInput.blur();
 });
+
+/** Opens or closes build mode. Build mode is a top-down view, so first person switches back first. */
+function toggleBuild() {
+  keys.clear();
+  if (!builder.active && mode === '3d') setMode('2d');
+  builder.toggle();
+  buildBtn.classList.toggle('on', builder.active);
+  buildBtn.blur();
+}
+buildBtn.onclick = toggleBuild;
 
 document.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) => {
   b.onclick = () => {
@@ -392,6 +428,10 @@ function onMessage(msg: ServerMsg) {
     case 'welcome':
       me.id = msg.id;
       session.isAdmin = !!msg.isAdmin;
+      session.token = msg.session ?? '';
+      session.canBuild = !!msg.canBuild;
+      buildBtn.hidden = !session.canBuild;
+      updateCustomObjects(msg.objects ?? [], () => builder.refreshPanel()); // before the office loads: it may place them
       session.ice = msg.ice ?? [];
       session.sprites = msg.sprites ?? [];
       media.setIceServers(session.ice);
@@ -406,8 +446,8 @@ function onMessage(msg: ServerMsg) {
       if (me.mic || me.cam) net.send({ t: 'media', mic: me.mic, cam: me.cam });
       others.clear();
       for (const p of msg.players) others.set(p.id, toPlayer(p));
-      sendState(true);
       renderPeople();
+      void afterWelcome(msg.layoutRev);
       break;
     case 'join':
       others.set(msg.player.id, toPlayer(msg.player));
@@ -460,7 +500,20 @@ function onMessage(msg: ServerMsg) {
       setOffice(msg);
       break;
     case 'adminState':
-      setAdminState(msg.areaAllowed);
+      setAdminState(msg.areaAllowed, msg.buildingEnabled);
+      break;
+    case 'objects':
+      updateCustomObjects(msg.objects, () => builder.refreshPanel());
+      recompile();
+      break;
+    case 'layout':
+      void onLayoutPublished(msg.rev, msg.by.name);
+      break;
+    case 'building':
+      session.canBuild = msg.canBuild;
+      buildBtn.hidden = !msg.canBuild;
+      setBuilding(msg.enabled);
+      if (!msg.canBuild) builder.buildingOff();
       break;
     case 'correct':
       me.x = msg.x;
@@ -496,6 +549,27 @@ function onMessage(msg: ServerMsg) {
       break;
     }
   }
+}
+
+let spawned = false;
+
+/** Loads the published office before our first position goes out, so we start at its spawn point, not an old one. */
+async function afterWelcome(rev: number | undefined) {
+  if (rev !== undefined && rev !== session.layoutRev) await loadLayout();
+  if (!spawned) {
+    me.x = SPAWN.x;
+    me.y = SPAWN.y;
+    spawned = true;
+  }
+  sendState(true);
+}
+
+/** Someone published a new layout: fetch it, and say who changed the office. */
+async function onLayoutPublished(rev: number, by: string) {
+  if (rev <= session.layoutRev) return;
+  await loadLayout(rev);
+  builder.publishedChanged();
+  if (!builder.ownRev(rev)) notice(`${by} updated the office`, { key: 'layout', ttlMs: 4000 });
 }
 
 function onChat(id: string, name: string, text: string, zone: string | null, scope: ChatScope) {
@@ -585,9 +659,23 @@ function renderZone() {
   updateLockHint();
 }
 
+// A new office arrived: repaint the map, rebuild the first-person view, and drop anything that pointed at the old one.
+onWorldChange((w) => {
+  if (!builder.active) renderer2d.setWorld(w);
+  raycaster.rebuild();
+  hoverDesk = null;
+  closeDeskCard();
+  lastPeopleKey = '';
+});
+
 // ------------------------------------------------------------- game loop
 
 function update(dt: number) {
+  if (builder.active) {
+    builder.update(dt, keys);
+    updateOthers(dt);
+    return;
+  }
   const run = held('ShiftLeft', 'ShiftRight') ? 1.8 : 1;
   let vx = 0, vy = 0;
   if (mode === '2d') {
@@ -619,6 +707,18 @@ function update(dt: number) {
     }
   }
 
+  updateOthers(dt);
+
+  for (const l of links) {
+    const p = others.get(l.peer);
+    if (p) media.setGain(l.peer, gainFor(l.kind, l.context, Math.hypot(p.x - me.x, p.y - me.y)));
+  }
+
+  sendState();
+}
+
+/** Eases other people toward where the server last saw them. */
+function updateOthers(dt: number) {
   const ease = Math.min(1, dt * 12);
   for (const p of others.values()) {
     if (Math.hypot(p.tx - p.x, p.ty - p.y) > 3) {
@@ -630,15 +730,9 @@ function update(dt: number) {
     p.a += Math.atan2(Math.sin(p.ta - p.a), Math.cos(p.ta - p.a)) * ease;
     if (p.moving) p.animT += dt;
   }
-
-  for (const l of links) {
-    const p = others.get(l.peer);
-    if (p) media.setGain(l.peer, gainFor(l.kind, l.context, Math.hypot(p.x - me.x, p.y - me.y)));
-  }
-
-  sendState();
 }
 
+/** `w` is the canvas width in CSS pixels. */
 function drawMinimap(w: number) {
   const s = 4;
   const mw = MAP_W * s, mh = MAP_H * s;
@@ -669,34 +763,60 @@ function render(now: number) {
   const people = [me, ...others.values()];
   if (mode === '2d') {
     renderer2d.deskTags = deskTags(hoverDesk);
-    renderer2d.render(ctx, w, h, zoom, me, people, now);
+    renderer2d.render(ctx, w, h, zoom, dpr, me, people, now);
   } else {
     raycaster.resize(w, h);
     raycaster.markers = deskMarkers();
-    const labels = raycaster.render(me, [...others.values()]);
+    const labels = raycaster.render(me, [...others.values()], Date.now());
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(raycaster.canvas, 0, 0, w, h);
-    const sx = w / raycaster.w, sy = h / raycaster.h;
+    // Labels and the minimap are laid out in CSS pixels.
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    const sx = w / dpr / raycaster.w, sy = h / dpr / raycaster.h;
     for (const m of raycaster.markerLabels) drawNameTag(ctx, m.text, m.x * sx, m.y * sy, 16, m.dot);
     for (const l of labels) {
       const top = drawNameTag(ctx, l.player.name, l.x * sx, l.y * sy - 4, 18, statusColor(l.player.status));
       if (l.player.bubble && l.player.bubble.until > now) drawBubble(ctx, l.player.bubble.text, l.x * sx, top);
     }
-    drawMinimap(w);
+    drawMinimap(w / dpr);
+    ctx.restore();
   }
 }
 
 function resize() {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+  const next = window.devicePixelRatio || 1;
+  if (next !== dpr) {
+    zoom = rescale(zoom, dpr, next);
+    dpr = next;
+  }
+  canvas.width = Math.round(window.innerWidth * dpr);
+  canvas.height = Math.round(window.innerHeight * dpr);
   ctx.imageSmoothingEnabled = false;
 }
 
+/** Moving the window to another screen (or browser zoom) changes the pixel ratio without a resize event on some browsers. */
+function watchPixelRatio() {
+  const query = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  query.addEventListener('change', () => {
+    resize();
+    watchPixelRatio();
+  }, { once: true });
+}
+
+/** Waits (briefly) for the interface font, so the first name tags are measured with it. */
+async function loadUiFont() {
+  const loaded = Promise.all([document.fonts.load('700 14px Nunito'), document.fonts.ready]).catch(() => {});
+  await Promise.race([loaded, new Promise((resolve) => setTimeout(resolve, 2000))]);
+}
+
 async function start() {
+  await loadUiFont();
   resize();
   window.addEventListener('resize', resize);
+  watchPixelRatio();
   // Paint the office behind the join card.
-  renderer2d.render(ctx, canvas.width, canvas.height, 3, { x: SPAWN.x, y: SPAWN.y - 6 } as Player, [], 0);
+  renderer2d.render(ctx, canvas.width, canvas.height, zoom, dpr, { x: SPAWN.x, y: SPAWN.y - 6 } as Player, [], 0);
 
   const profile = await showJoinScreen();
   me = {

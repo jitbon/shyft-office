@@ -106,12 +106,14 @@ describe('gainFor', () => {
   });
 });
 
-// Pod 1 is the top-left desk cluster: chairs at (3..6, 12), desks above them. The desk the chair
-// at (4, 12) belongs to is `pod-1:4,12`, and it includes the tile below the chair, (4, 13).
+// Pod 1 is the left desk pod: two desks facing two. The top-left desk is `desk-5-13`: its chair at (6, 12), its
+// surface below the chair on row 13, and the floor behind the chair, (6, 11), as part of the desk.
+// The other desk in its row, `desk-9-13`, has its chair four tiles to the right.
 describe('desk pods', () => {
-  const SEAT_A = { x: 4.5, y: 12.5 };
-  const SEAT_B = { x: 5.5, y: 12.5 };
-  const DESK_4 = 'pod-1:4,12';
+  const SEAT_A = { x: 6.5, y: 12.5 };
+  const SEAT_B = { x: 10.5, y: 12.5 };
+  const BEHIND_A = { x: 6.5, y: 11.5 };
+  const DESK_A = 'desk-5-13';
 
   it('gives neighbours seated in an ambient pod an ambient link, not a conversation', () => {
     const r = computeLinks([player('a', SEAT_A.x, SEAT_A.y), player('b', SEAT_B.x, SEAT_B.y)]);
@@ -127,14 +129,14 @@ describe('desk pods', () => {
   });
 
   it('does not link seated people in different pods', () => {
-    // Pod 5 is the cluster directly below pod 1; its chairs are on row 16.
-    const r = computeLinks([player('a', SEAT_A.x, SEAT_A.y), player('b', 4.5, 16.5)]);
+    // Pod 2 is the next pod along, with its chairs at (18, 12) and (22, 12).
+    const r = computeLinks([player('a', SEAT_A.x, SEAT_A.y), player('b', 18.5, 12.5)]);
     expect(r.links).toHaveLength(0);
   });
 
   it('opens a conversation when someone walks up to a seated person', () => {
-    // Row 14 is outside the pod, so the walker is not seated.
-    const r = computeLinks([player('a', SEAT_A.x, SEAT_A.y), player('b', SEAT_B.x, SEAT_B.y), player('walker', 4.5, 14.5)]);
+    // Row 10 is outside every desk, so the walker is not seated, and is within talking range of both desks.
+    const r = computeLinks([player('a', SEAT_A.x, SEAT_A.y), player('b', SEAT_B.x, SEAT_B.y), player('walker', 8.5, 10.5)]);
     expect(r.conversations).toHaveLength(1);
     expect(r.conversations[0].members.sort()).toEqual(['a', 'b', 'walker']);
     // The two seated neighbours are in the conversation, so they need no ambient link as well.
@@ -143,19 +145,19 @@ describe('desk pods', () => {
 
   it('puts everyone allowed inside a locked desk into one desk conversation', () => {
     const office: OfficeInput = {
-      locked: new Map([[DESK_4, new Set(['owner', 'guest'])]]),
-      deskLabels: new Map([[DESK_4, "Sam's desk"]]),
+      locked: new Map([[DESK_A, new Set(['owner', 'guest'])]]),
+      deskLabels: new Map([[DESK_A, "Sam's desk"]]),
     };
-    const r = computeLinks([player('owner', SEAT_A.x, SEAT_A.y), player('guest', 4.5, 13.5)], new Set(), {}, office);
+    const r = computeLinks([player('owner', SEAT_A.x, SEAT_A.y), player('guest', BEHIND_A.x, BEHIND_A.y)], new Set(), {}, office);
     expect(r.conversations).toEqual([
-      { id: 'owner', context: `desk:${DESK_4}`, label: "Sam's desk", members: ['owner', 'guest'] },
+      { id: 'owner', context: `desk:${DESK_A}`, label: "Sam's desk", members: ['owner', 'guest'] },
     ]);
   });
 
   it('does not pull an uninvited person standing inside a locked desk into its meeting', () => {
-    const office: OfficeInput = { locked: new Map([[DESK_4, new Set(['owner', 'guest'])]]) };
+    const office: OfficeInput = { locked: new Map([[DESK_A, new Set(['owner', 'guest'])]]) };
     const r = computeLinks(
-      [player('owner', SEAT_A.x, SEAT_A.y), player('guest', 4.5, 13.5), player('intruder', 4.5, 10.5)],
+      [player('owner', SEAT_A.x, SEAT_A.y), player('guest', BEHIND_A.x, BEHIND_A.y), player('intruder', 6.5, 10.5)],
       new Set(), {}, office,
     );
     expect(r.conversations).toHaveLength(1);
@@ -164,8 +166,8 @@ describe('desk pods', () => {
   });
 
   it('reports the desk context for chat only to people allowed in', () => {
-    const office: OfficeInput = { locked: new Map([[DESK_4, new Set(['owner'])]]) };
-    expect(positionContext(SEAT_A.x, SEAT_A.y, 'owner', office)).toBe(`desk:${DESK_4}`);
+    const office: OfficeInput = { locked: new Map([[DESK_A, new Set(['owner'])]]) };
+    expect(positionContext(SEAT_A.x, SEAT_A.y, 'owner', office)).toBe(`desk:${DESK_A}`);
     expect(positionContext(SEAT_A.x, SEAT_A.y, 'other', office)).toBe('open');
     expect(positionContext(SEAT_A.x, SEAT_A.y, 'owner', {})).toBe('open');
   });

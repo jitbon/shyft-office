@@ -1,15 +1,22 @@
+import crypto from 'node:crypto';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
+import os from 'node:os';
+import { currentCatalog, setCustomObjects } from '../shared/catalog';
 import {
-  AREAS, MAP_H, MAP_W, SPAWN, areaAt, areaById, deskAt, deskById, nearestFreeTileNear, validateOffice,
+  AREAS, MAP_H, MAP_W, SPAWN, areaAt, areaById, deskAt, deskById, isBlocking, nearestFreeTile, nearestFreeTileNear, setWorld, validateOffice,
 } from '../shared/map';
+import { compileWorld } from '../shared/world';
 import type { ClientMsg, Look, PlayerState, ServerMsg } from '../shared/protocol';
 import { isMemberId, isUuid } from '../shared/member';
 import { positionContext } from '../shared/proximity';
 import { cleanStatus, expireStatus } from '../shared/status';
+import { handleApi, type ApiContext } from './api';
+import { LayoutStore } from './layout-store';
+import { ObjectsStore } from './objects';
 import { LinkEngine } from './links';
 import { OfficeState } from './office';
 import { loadSprites, noSprites, validateAvatarChoice } from './sprites';
@@ -27,6 +34,12 @@ export interface ServerOptions {
   ice?: { urls: string | string[]; username?: string; credential?: string }[];
   /** How often links are recomputed regardless of movement. */
   tickMs?: number;
+  /** Most custom-object uploads one member may make in a minute. Default 10. */
+  uploadsPerMinute?: number;
+  /** Least time between one member's publishes. Default 2 s. */
+  publishCooldownMs?: number;
+  /** Least time between one member's draft saves. Default 0.5 s. */
+  draftCooldownMs?: number;
   /** How often idle connections are pinged. One that misses a whole round is dropped, so a dead one goes within twice this. */
   pingMs?: number;
 }
@@ -65,6 +78,8 @@ interface Conn {
   ws: WebSocket;
   p: PlayerState;
   isAdmin: boolean;
+  /** Token this connection sends to the HTTP API. */
+  session: string;
 }
 
 export function startServer(opts: ServerOptions): Promise<RunningServer> {
@@ -90,6 +105,17 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     res.writeHead(404).end();
   }
 
+  /** Serves the sheets of validated custom objects. The version in the URL changes when a sheet does, so they cache for long. */
+  function serveObjects(name: string, res: http.ServerResponse) {
+    const m = /^([a-z0-9-]+)\.png$/.exec(name);
+    const bytes = m && objects.file(m[1]);
+    if (!bytes) {
+      res.writeHead(404).end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=31536000, immutable' }).end(bytes);
+  }
+
   // Serves the built client in production; during development Vite serves it.
   const server = http.createServer((req, res) => {
     // One bad request must never take the office down for everyone.
@@ -111,6 +137,11 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       return;
     }
     if (urlPath.startsWith('/sprites/')) return serveSprites(urlPath.slice('/sprites/'.length), res);
+    if (urlPath.startsWith('/objects/')) return serveObjects(urlPath.slice('/objects/'.length), res);
+    if (urlPath.startsWith('/api/')) {
+      void handleApi(req, res, new URL(req.url ?? '/', 'http://x'), apiContext);
+      return;
+    }
     let file = path.join(distDir, urlPath);
     // Inside dist itself: a bare prefix check would also let in a sibling such as dist-old/.
     if (file !== distDir && !file.startsWith(distDir + path.sep)) {
@@ -129,6 +160,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
   const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 64 * 1024 });
   const conns = new Map<WebSocket, Conn>();
   const byId = new Map<string, Conn>();
+  const sessions = new Map<string, Conn>();
   const alive = new WeakSet<WebSocket>();
   let nextId = 1;
   let nextEphemeral = 1;
@@ -147,12 +179,40 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     }
   }
 
+  const dataDir = opts.dataDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'shyft-data-'));
+  // Custom objects first: a layout may place them. Then the published layout, before saved desk claims, which are matched against its desks.
+  const objects = ObjectsStore.load(path.join(dataDir, 'objects'));
+  setCustomObjects(objects.list());
+  const layouts = LayoutStore.load(dataDir);
+  setWorld(compileWorld(layouts.current.layout, currentCatalog()));
+  layouts.pruneDrafts();
+  const pruner = setInterval(() => layouts.pruneDrafts(), 24 * 60 * 60 * 1000);
+  pruner.unref();
   validateOffice();
   const store = opts.dataDir ? new StateStore(opts.dataDir) : null;
   const office: OfficeState = new OfficeState(() => [...conns.values()].map((c) => c.p), {
     state: opts.dataDir ? loadState(opts.dataDir) : undefined,
     onChange: () => store?.save(office.persistState()),
   });
+  const canBuild = (c: Conn) => !c.p.memberId.startsWith('eph-') && (c.isAdmin || office.buildingEnabled);
+  const apiContext: ApiContext = {
+    layouts,
+    objects,
+    objectsChanged: () => {
+      setCustomObjects(objects.list());
+      broadcast({ t: 'objects', objects: objects.list() });
+    },
+    uploadsPerMinute: opts.uploadsPerMinute ?? 10,
+    catalog: () => currentCatalog(),
+    caller: (token) => {
+      const c = token ? sessions.get(token) : undefined;
+      return c && { memberId: c.p.memberId, name: c.p.name, isAdmin: c.isAdmin, guest: c.p.memberId.startsWith('eph-') };
+    },
+    buildingEnabled: () => office.buildingEnabled,
+    applyPublish: (layout, by) => applyPublish(layout, by),
+    publishCooldownMs: opts.publishCooldownMs ?? 2000,
+    draftCooldownMs: opts.draftCooldownMs ?? 500,
+  };
   const links = new LinkEngine(() => [...conns.values()].map((c) => c.p), sendTo, {}, () => office.linkInput());
   // A status with a time limit goes back to available when it runs out.
   links.beforeUpdate = () => {
@@ -177,7 +237,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (!c.isAdmin) return;
     const areaAllowed: Record<string, string[]> = {};
     for (const a of AREAS) if (a.restricted) areaAllowed[a.id] = office.allowedFor(a.id);
-    send(c.ws, { t: 'adminState', areaAllowed });
+    send(c.ws, { t: 'adminState', areaAllowed, buildingEnabled: office.buildingEnabled });
   };
 
   wss.on('connection', (ws) => {
@@ -206,6 +266,38 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     ws.on('close', () => onClose(ws));
   });
 
+  /**
+   * Makes a checked layout the office everyone shares: the world is recompiled, anyone left inside a wall or
+   * furniture is moved to a free tile, and every client is told to fetch the new revision.
+   */
+  function applyPublish(layout: import('../shared/layout').Layout, by: import('./layout-store').Publisher) {
+    const rev = layouts.publish(layout, by);
+    setWorld(compileWorld(rev.layout, currentCatalog()));
+    // Desks that are gone lose their claim; each holder hears about it, now if online, otherwise on their next join.
+    for (const { memberId, deskId } of office.reconcile().released) {
+      const online = [...conns.values()].filter((c) => c.p.memberId === memberId);
+      if (!online.length) office.addDeskNotice(memberId, 'removed');
+      for (const c of online) send(c.ws, { t: 'notify', kind: 'deskRemoved', deskId, text: 'Your desk was removed in the latest office update.' });
+    }
+    const taken = new Set<string>();
+    for (const c of conns.values()) {
+      if (isBlocking(Math.floor(c.p.x), Math.floor(c.p.y))) continue;
+      taken.add(`${Math.floor(c.p.x)},${Math.floor(c.p.y)}`);
+    }
+    for (const c of conns.values()) {
+      if (!isBlocking(Math.floor(c.p.x), Math.floor(c.p.y))) continue;
+      const spot = nearestFreeTile(c.p.x, c.p.y, taken);
+      taken.add(`${Math.floor(spot.x)},${Math.floor(spot.y)}`);
+      c.p.x = spot.x;
+      c.p.y = spot.y;
+      send(c.ws, { t: 'teleport', ...spot, reason: 'layout' });
+    }
+    broadcast({ t: 'layout', rev: rev.rev, by: { name: by.name }, at: rev.at });
+    broadcastOffice();
+    links.update();
+    return rev;
+  }
+
   function handle(ws: WebSocket, msg: ClientMsg, rawLength: number) {
     const conn = conns.get(ws);
 
@@ -232,9 +324,11 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         ws,
         p,
         isAdmin: !!opts.adminToken && typeof msg.admin === 'string' && msg.admin === opts.adminToken,
+        session: crypto.randomBytes(16).toString('hex'),
       };
       conns.set(ws, c);
       byId.set(p.id, c);
+      sessions.set(c.session, c);
       send(ws, {
         t: 'welcome',
         id: p.id,
@@ -243,8 +337,15 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         sprites: sprites.index,
         ice,
         isAdmin: c.isAdmin,
+        session: c.session,
+        layoutRev: layouts.current.rev,
+        canBuild: canBuild(c),
+        objects: objects.list(),
       });
       sendAdminState(c);
+      // Someone who lost their desk when the office was redesigned or updated hears about it once, on their first join.
+      const deskNotice = office.takeDeskNotice(p.memberId);
+      if (deskNotice) send(ws, { t: 'notify', kind: deskNotice === 'reset' ? 'deskReset' : 'deskRemoved', ...(deskNotice === 'removed' ? { text: 'Your desk was removed in the latest office update.' } : {}) });
       broadcast({ t: 'join', player: p }, ws);
       broadcastOffice();
       console.log(`+ ${p.name} (${conns.size} online)`);
@@ -360,6 +461,12 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
           broadcastOffice();
           links.update();
         }
+      } else if (msg.op === 'building' && typeof msg.enabled === 'boolean') {
+        if (office.buildingEnabled !== msg.enabled) {
+          office.buildingEnabled = msg.enabled;
+          office.save();
+        }
+        for (const o of conns.values()) send(o.ws, { t: 'building', enabled: office.buildingEnabled, canBuild: canBuild(o) });
       } else if (msg.op === 'areaAllowed' && areaById(String(msg.areaId)) && Array.isArray(msg.memberIds)) {
         const ids = msg.memberIds.filter(isUuid).slice(0, 200);
         office.setAreaAllowed(msg.areaId, ids.map((m) => m.toLowerCase()));
@@ -466,6 +573,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (!c) return;
     conns.delete(ws);
     byId.delete(c.p.id);
+    sessions.delete(c.session);
     links.remove(c.p.id);
     for (const key of [...rings.keys(), ...lastWave.keys()]) {
       if (key.startsWith(`${c.p.id}>`) || key.endsWith(`>${c.p.id}`)) {
@@ -500,6 +608,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     wss.once('error', (err) => {
       links.stop();
       clearInterval(pinger);
+      clearInterval(pruner);
       reject(err); // e.g. the port is already in use
     });
     server.listen(opts.port, () => {
@@ -512,6 +621,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
             links.stop();
             store?.flush();
             clearInterval(pinger);
+            clearInterval(pruner);
             for (const ws of wss.clients) ws.terminate();
             wss.close(() => server.close(() => done()));
           }),

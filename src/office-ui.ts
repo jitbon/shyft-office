@@ -68,8 +68,15 @@ export function onSprites(msg: Extract<ServerMsg, { t: 'sprites' }>) {
   renderAdmin();
 }
 
-export function setAdminState(areaAllowed: Record<string, string[]>) {
+export function setAdminState(areaAllowed: Record<string, string[]>, building?: boolean) {
   adminAllowed = areaAllowed;
+  if (building !== undefined) buildingEnabled = building;
+  renderAdmin();
+}
+
+/** An admin turned building on or off. */
+export function setBuilding(enabled: boolean) {
+  buildingEnabled = enabled;
   renderAdmin();
 }
 
@@ -170,6 +177,18 @@ export function onNotify(msg: NotifyMsg) {
       ttlMs: 30_000,
       buttons: [{ label: 'Go there', onClick: () => deps.send({ t: 'walkToDesk', deskId }) }],
     });
+  } else if (msg.kind === 'deskReset') {
+    notice('The office was redesigned and desks were reset. Click a free desk to claim a new one.', {
+      key: 'deskReset',
+      ttlMs: 12_000,
+      buttons: [{ label: 'Got it', onClick: () => {} }],
+    });
+  } else if (msg.kind === 'deskRemoved') {
+    notice(msg.text ?? 'Your desk was removed in the latest office update.', {
+      key: 'deskRemoved',
+      ttlMs: 12_000,
+      buttons: [{ label: 'Got it', onClick: () => {} }],
+    });
   }
 }
 
@@ -254,7 +273,7 @@ export function deskTags(hover: string | null): DeskTag[] {
 /** Floating labels for claimed desks in first-person view. */
 export function deskMarkers(): { x: number; y: number; text: string; dot: string }[] {
   return (office?.desks ?? []).flatMap((s) => {
-    if (!s.owner) return [];
+    if (!s.owner || !deskById(s.id)) return []; // a desk the new layout has not reached this browser yet
     const status = s.owner.online ? s.owner.status ?? { kind: 'available' as const } : null;
     const note = status?.text ? ` · ${status.text}` : '';
     return [{ ...surface(s.id), text: `${s.locked ? '🔒 ' : ''}${s.owner.name}${note}`, dot: status ? statusColor(status) : OFFLINE_COLOR }];
@@ -375,6 +394,9 @@ function renderDeskCard() {
 
 // ------------------------------------------------------------ admin panel
 
+/** Whether members may edit the office layout (the admin panel shows and sets it). */
+let buildingEnabled = true;
+
 function renderAdmin() {
   const panel = $('adminPanel');
   if (panel.hidden) return;
@@ -394,6 +416,17 @@ function renderAdmin() {
     pods.append(label);
   }
   panel.append(pods);
+
+  const building = document.createElement('div');
+  building.className = 'group';
+  const switchLabel = document.createElement('label');
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = buildingEnabled;
+  box.onchange = () => deps.send({ t: 'admin', op: 'building', enabled: box.checked });
+  switchLabel.append(document.createTextNode('Members can edit the office '), box);
+  building.append(Object.assign(document.createElement('b'), { textContent: 'Building' }), switchLabel);
+  panel.append(building);
 
   const sprites = document.createElement('div');
   sprites.className = 'group';

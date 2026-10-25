@@ -4,7 +4,7 @@ import { MAX_MEMBER_ID, isMemberId, isUuid } from '../../shared/member';
 import { MAX_DESK_GUESTS, OfficeState, type OfficePlayer } from '../../server/office';
 import { emptyState } from '../../server/store';
 
-const D1 = DESKS[1]; // pod-1:4,12
+const D1 = DESKS[1]; // desk-9-13
 const D2 = DESKS[2];
 const seat = (d: { seat: { x: number; y: number } }) => ({ x: d.seat.x + 0.5, y: d.seat.y + 0.5 });
 const LOBBY = { x: 20.5, y: 19.5 };

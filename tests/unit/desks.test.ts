@@ -1,16 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
-  AREAS, DESKS, DESK_PODS, deriveDesks, deskAt, nearestFreeTileNear, podAt, tileAt, validateOffice,
+  AREAS, DESKS, DESK_PODS, deskAt, nearestFreeTileNear, podAt, tileAt, validateOffice,
   type DeskPod,
 } from '../../shared/map';
+import { builtInCatalog } from '../../shared/catalog';
+import { defaultLayout } from '../../shared/default-layout';
+import { compileWorld } from '../../shared/world';
 
 describe('derived desks', () => {
-  it('finds one desk per chair next to a desk tile, with ids <podId>:<x>,<y>', () => {
-    // Eight clusters of four desks.
-    expect(DESKS).toHaveLength(32);
-    expect(deriveDesks()).toEqual(DESKS);
+  it('finds one desk per desk object with a chair against it, named after the desk object', () => {
+    // Three pods of four desks.
+    expect(DESKS).toHaveLength(12);
+    expect(compileWorld(defaultLayout(), builtInCatalog()).desks).toEqual(DESKS);
     for (const d of DESKS) {
-      expect(d.id).toBe(`${d.podId}:${d.seat.x},${d.seat.y}`);
+      expect(d.id).toMatch(/^desk-\d+-\d+$/);
       expect(tileAt(d.seat.x, d.seat.y)).toBe('h');
       expect(d.tiles.some((t) => tileAt(t.x, t.y) === 'd')).toBe(true);
       expect(d.tiles[0]).toEqual(d.seat);

@@ -11,7 +11,9 @@
     "test": "vitest run",
     "sprites:template": "tsx tools/sprite-template.ts",
     "sprites:check": "tsx tools/sprite-check.ts",
-    "bots": "tsx tools/bots.ts"
+    "bots": "tsx tools/bots.ts",
+    "objects:template": "tsx tools/object-template.ts",
+    "objects:check": "tsx tools/object-check.ts"
   },
   "dependencies": {
     "tsx": "^4.20.0",

@@ -5,6 +5,8 @@ import { PNG } from 'pngjs';
 import { COLS, FORMAT_VERSION, ROWS, ROW_DIRS } from '../shared/sprites';
 
 const SIZE = 16;
+/** The robot is drawn on a 16-pixel grid and written out doubled, as a 32-pixel sheet, the recommended size. */
+const SCALE = 2;
 const COLORS = {
   k: [26, 28, 44], // outline
   g: [154, 163, 181], // light metal
@@ -55,14 +57,20 @@ function robot(dir: (typeof ROW_DIRS)[number], step: number): Frame {
   return f;
 }
 
-const png = new PNG({ width: SIZE * COLS, height: SIZE * ROWS });
+const OUT = SIZE * SCALE;
+const png = new PNG({ width: OUT * COLS, height: OUT * ROWS });
 ROW_DIRS.forEach((dir, row) => {
   for (let col = 0; col < COLS; col++) {
     const frame = robot(dir, col);
     for (let y = 0; y < SIZE; y++) {
       for (let x = 0; x < SIZE; x++) {
         const c = frame[y][x];
-        if (c) png.data.set([...COLORS[c], 255], ((row * SIZE + y) * png.width + col * SIZE + x) * 4);
+        if (!c) continue;
+        for (let dy = 0; dy < SCALE; dy++) {
+          for (let dx = 0; dx < SCALE; dx++) {
+            png.data.set([...COLORS[c], 255], ((row * OUT + y * SCALE + dy) * png.width + col * OUT + x * SCALE + dx) * 4);
+          }
+        }
       }
     }
   }

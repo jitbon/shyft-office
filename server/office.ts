@@ -3,7 +3,7 @@ import {
 } from '../shared/map';
 import type { OfficeSnapshot, PlayerStatus } from '../shared/protocol';
 import type { OfficeInput } from '../shared/proximity';
-import { emptyState, type DeskClaim, type StoredState } from './store';
+import { emptyState, type DeskClaim, type DeskNotice, type DeskNoticeKind, type StoredState } from './store';
 
 export type EntryDenied = 'full' | 'restricted' | 'locked';
 
@@ -46,6 +46,10 @@ export class OfficeState {
   private locked = new Set<string>();
   /** deskId -> member ids the owner invited. */
   private guests = new Map<string, Set<string>>();
+  /** Members still to be told that their desk was reset or removed. Saved, so a restart does not lose them. */
+  private deskNotice: DeskNotice[] = [];
+  /** Whether non-admin members can edit the layout. Saved. */
+  buildingEnabled = true;
 
   constructor(
     private players: () => Iterable<OfficePlayer>,
@@ -57,6 +61,8 @@ export class OfficeState {
     }
     for (const [deskId, claim] of Object.entries(state.deskClaims)) this.claims.set(deskId, claim);
     for (const [podId, mode] of Object.entries(state.podModes)) this.podModeOverride.set(podId, mode);
+    this.deskNotice = [...state.deskNotice];
+    this.buildingEnabled = state.buildingEnabled;
     this.onChange = opts.onChange ?? (() => {});
   }
 
@@ -84,14 +90,37 @@ export class OfficeState {
     return true;
   }
 
+  /** Saves the state in the background, after a change that is not made through a method here. */
+  save() {
+    this.onChange();
+  }
+
   /** Everything that must survive a restart. */
   persistState(): StoredState {
     return {
-      version: 1,
+      version: 3,
       deskClaims: Object.fromEntries(this.claims),
       podModes: Object.fromEntries(this.podModeOverride),
       areaAllowed: Object.fromEntries([...this.allowedOverride].map(([id, set]) => [id, [...set]])),
+      deskNotice: [...this.deskNotice],
+      buildingEnabled: this.buildingEnabled,
     };
+  }
+
+  /** What to tell a member who lost their desk, once: they are told, then forgotten. */
+  takeDeskNotice(memberId: string): DeskNoticeKind | null {
+    const first = this.deskNotice.find((n) => n.memberId === memberId);
+    if (!first) return null;
+    this.deskNotice = this.deskNotice.filter((n) => n.memberId !== memberId);
+    this.onChange();
+    return first.kind;
+  }
+
+  /** Remembers to tell an offline member about their desk the next time they join. */
+  addDeskNotice(memberId: string, kind: DeskNoticeKind) {
+    if (memberId.startsWith('eph-') || this.deskNotice.some((n) => n.memberId === memberId && n.kind === kind)) return;
+    if (this.deskNotice.length < 500) this.deskNotice.push({ memberId, kind });
+    this.onChange();
   }
 
   /**
@@ -214,6 +243,42 @@ export class OfficeState {
     this.podModeOverride.set(podId, mode);
     this.onChange();
     return true;
+  }
+
+  /**
+   * Call after a new layout became the office. Releases what no longer exists: claims (with their lock and
+   * invitations) on desks that are gone, and allow-lists, admissions, knocks and pod modes for rooms and pods that
+   * are gone. A desk that only moved keeps its claim, because the desk keeps its id. Returns the released claims, so
+   * their holders can be told.
+   */
+  reconcile(): { released: { memberId: string; deskId: string }[] } {
+    const released: { memberId: string; deskId: string }[] = [];
+    let changed = false;
+    for (const [deskId, claim] of [...this.claims]) {
+      if (deskById(deskId)) continue;
+      this.claims.delete(deskId);
+      released.push({ memberId: claim.memberId, deskId });
+      changed = true;
+    }
+    for (const deskId of [...this.locked]) if (!deskById(deskId)) this.locked.delete(deskId);
+    for (const deskId of [...this.guests.keys()]) if (!deskById(deskId)) this.guests.delete(deskId);
+    for (const areaId of [...this.allowedOverride.keys()]) {
+      if (areaById(areaId)) continue;
+      this.allowedOverride.delete(areaId);
+      changed = true;
+    }
+    for (const [memberId, areas] of [...this.admitted]) {
+      for (const areaId of [...areas]) if (!areaById(areaId)) areas.delete(areaId);
+      if (!areas.size) this.admitted.delete(memberId);
+    }
+    for (const key of [...this.knocks.keys()]) if (!areaById(key.slice(0, key.indexOf('|')))) this.knocks.delete(key);
+    for (const podId of [...this.podModeOverride.keys()]) {
+      if (podById(podId)) continue;
+      this.podModeOverride.delete(podId);
+      changed = true;
+    }
+    if (changed) this.onChange();
+    return { released };
   }
 
   /** What the link rules need to know about desks right now. */

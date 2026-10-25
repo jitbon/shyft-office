@@ -7,8 +7,9 @@ ships to users as `sprites/FORMAT.md`, next to the generated `template.png`.
 
 - **File**: PNG with an alpha channel (RGBA). Maximum 256 KB.
 - **Grid**: 4 columns × 4 rows of equal, square frames.
-- **Frame size**: **16×16 px** (native) or **32×32 px** (downscaled 2:1 with no smoothing). The whole image is therefore
-  64×64 or 128×128 px.
+- **Frame size**: **32×32 px** (recommended: it is shown exactly as you draw it) or **16×16 px** (shown at twice the size
+  with no smoothing, so it ends up the same size on screen as a 32 px character). The whole image is therefore
+  128×128 or 64×64 px. Characters are one map tile tall, whichever size you pick.
 - **Background**: fully transparent. The 4 corner pixels of every frame must be transparent.
 - **Every frame** must contain at least one opaque pixel.
 
@@ -61,7 +62,7 @@ as `full` and named after its id.
 |---|---|
 | `not-png` | the file is not a decodable PNG |
 | `too-large` | the file is over 256 KB |
-| `bad-size` | the dimensions are not 64×64 or 128×128 |
+| `bad-size` | the dimensions are not 128×128 or 64×64 |
 | `no-alpha` | the PNG has no alpha channel, or a frame corner is opaque |
 | `empty-frame:<row>,<col>` | that frame has no opaque pixels |
 | `bad-layer` | the sidecar `layer` is not one of the allowed values |
@@ -71,8 +72,8 @@ as `full` and named after its id.
 
 ## Tooling
 
-- `npm run sprites:template -- [--size 16|32] [--out file.png]` writes a guide sheet (the `--` is needed so npm passes
-  the options on). It has faint frame borders, a tinted band for each facing direction, a feet line and a centre
+- `npm run sprites:template -- [--size 32|16] [--out file.png]` writes a guide sheet, 32 px frames unless you ask for
+  16 (the `--` is needed so npm passes the options on). It has faint frame borders, a tinted band for each facing direction, a feet line and a centre
   line. Paint over it on a separate layer, then delete the guide layer: the guide pixels would otherwise fail the
   transparent-corner rule.
 - `npm run sprites:check <file.png> [more.png…]` validates sheets and prints `OK` or the error codes above. The exit

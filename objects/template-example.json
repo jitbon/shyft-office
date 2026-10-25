@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "name": "Example object",
+  "footprint": [
+    1,
+    1
+  ],
+  "height": 64,
+  "blocks": true,
+  "frames": 2,
+  "fps": 4,
+  "back": false
+}

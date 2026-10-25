@@ -6,7 +6,7 @@
     <title>Shyft Office</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet" />
   </head>
   <body>
     <canvas id="game"></canvas>
@@ -20,10 +20,12 @@
         <button id="micBtn" class="off" title="Microphone (M)">Mic</button>
         <button id="camBtn" class="off" title="Camera (C)">Cam</button>
         <button id="deskBtn" title="Go to your desk, or claim one (G)">Desk</button>
+        <button id="buildBtn" title="Rearrange the office (B)" hidden>Build</button>
         <button id="characterBtn" title="Change your character">Character</button>
         <button id="statusBtn" title="Set your status (Ctrl+U toggles Do Not Disturb)">Status</button>
         <button id="adminBtn" title="Office admin" hidden>Admin</button>
       </div>
+      <div id="builderPanel" class="panel" hidden></div>
       <div id="adminPanel" class="panel" hidden></div>
       <div id="statusPanel" class="panel" hidden></div>
       <div id="areaBanner" class="panel" hidden></div>

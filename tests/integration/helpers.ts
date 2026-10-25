@@ -114,3 +114,37 @@ export function writeTestSheet(dir: string, id: string, layer = 'full') {
   fs.writeFileSync(path.join(dir, `${id}.png`), PNG.sync.write(png));
   fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ name: id.toUpperCase(), layer }));
 }
+
+export const newMemberId = () => crypto.randomUUID();
+
+/** The HTTP session token the server gave this client in its welcome message. */
+export const sessionOf = (c: TestClient) => c.all('welcome')[0].session!;
+
+export interface ApiResult<T = any> {
+  status: number;
+  body: T;
+}
+
+/** Calls the builder HTTP API as `client` (or with no session when `client` is null). */
+export async function api<T = any>(
+  port: number,
+  client: TestClient | null,
+  method: string,
+  path: string,
+  body?: unknown,
+  rawBody?: string,
+): Promise<ApiResult<T>> {
+  const res = await fetch(`http://localhost:${port}${path}`, {
+    method,
+    headers: { ...(client ? { 'x-shyft-session': sessionOf(client) } : {}), 'content-type': 'application/json' },
+    body: rawBody ?? (body === undefined ? undefined : JSON.stringify(body)),
+  });
+  const text = await res.text();
+  let parsed: unknown = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = text;
+  }
+  return { status: res.status, body: parsed as T };
+}

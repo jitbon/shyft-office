@@ -3,12 +3,12 @@ import { deskAt, deskById } from '../../shared/map';
 import type { RunningServer } from '../../server/app';
 import { connectClient, startTestServer, type TestClient } from './helpers';
 
-// pod-1:4,12 is an inner desk: its chair at (4,12), the desk at (4,11), and the tiles at (4,10) and (4,13).
-// The chairs either side, (3,12) and (5,12), belong to other desks, one tile away.
-const DESK = 'pod-1:4,12';
-const SEAT = { x: 4.5, y: 12.5 };
-const BEHIND = { x: 4.5, y: 13.5 };
-const NEXT_DOOR = [{ x: 5.5, y: 12.5 }, { x: 5.5, y: 13.5 }];
+// desk-5-13 is the top-left desk: its chair at (6,12), the desk surface at (5..7,13), and the floor behind the
+// chair, (6,11). The floor at (8,11..12) between it and the next desk belongs to that next desk, two tiles away.
+const DESK = 'desk-5-13';
+const SEAT = { x: 6.5, y: 12.5 };
+const BEHIND = { x: 6.5, y: 11.5 };
+const NEXT_DOOR = [{ x: 8.5, y: 12.5 }, { x: 8.5, y: 11.5 }];
 
 let server: RunningServer;
 let clients: TestClient[] = [];
@@ -120,7 +120,7 @@ describe('desk ownership', () => {
     b.send({ t: 'walkToDesk', deskId: DESK });
     const t = await b.next('teleport');
     expect(deskAt(t.x, t.y)?.id).toBe(deskById(DESK)!.id);
-    expect(Math.floor(t.x) === 4 && Math.floor(t.y) === 12).toBe(false); // A is sitting in the chair
+    expect(Math.floor(t.x) === 6 && Math.floor(t.y) === 12).toBe(false); // A is sitting in the chair
   });
 
   it('keeps claims across a server restart', async () => {

@@ -1,3 +1,5 @@
+import type { CustomObject } from './objects';
+
 export type ViewMode = '2d' | '3d';
 
 export interface Look {
@@ -84,12 +86,13 @@ export interface PlayerState extends Pose {
 export type ChatScope = 'office' | 'nearby' | 'area' | 'desk';
 
 export type NotifyKind =
-  | 'knock' | 'knockResult' | 'ring' | 'ringResult' | 'wave' | 'deskInvite' | 'error';
+  | 'knock' | 'knockResult' | 'ring' | 'ringResult' | 'wave' | 'deskInvite' | 'deskReset' | 'deskRemoved' | 'error';
 
 export type AdminOp =
   | { op: 'podMode'; podId: string; mode: 'ambient' | 'cubicle' }
   | { op: 'reloadSprites' }
-  | { op: 'areaAllowed'; areaId: string; memberIds: string[] };
+  | { op: 'areaAllowed'; areaId: string; memberIds: string[] }
+  | { op: 'building'; enabled: boolean };
 
 export type ClientMsg =
   | { t: 'join'; name: string; look: Look; memberId?: string; avatar?: AvatarChoice; admin?: string }
@@ -118,6 +121,14 @@ export type ServerMsg =
       sprites?: SpriteIndex;
       ice?: { urls: string | string[]; username?: string; credential?: string }[];
       isAdmin?: boolean;
+      /** Random token this connection sends as `X-Shyft-Session` when it calls the HTTP API. */
+      session?: string;
+      /** The published layout revision to fetch from `GET /api/layout`. */
+      layoutRev?: number;
+      /** Whether this connection may edit the office layout. */
+      canBuild?: boolean;
+      /** The custom furniture and objects builders have added. */
+      objects?: CustomObject[];
     }
   | { t: 'join'; player: PlayerState }
   | { t: 'leave'; id: string }
@@ -136,7 +147,13 @@ export type ServerMsg =
     }
   | ({ t: 'office' } & OfficeSnapshot)
   | { t: 'correct'; x: number; y: number; reason: 'full' | 'restricted' | 'locked'; areaId?: string; deskId?: string }
-  | { t: 'teleport'; x: number; y: number; reason: 'ring' | 'desk' }
+  | { t: 'teleport'; x: number; y: number; reason: 'ring' | 'desk' | 'layout' }
+  /** A new layout was published: fetch `GET /api/layout?rev=<rev>`. */
+  | { t: 'layout'; rev: number; by: { name: string }; at: number }
+  /** The custom objects changed (one was added or removed). */
+  | { t: 'objects'; objects: CustomObject[] }
+  /** An admin turned building on or off; `canBuild` is this recipient's own permission. */
+  | { t: 'building'; enabled: boolean; canBuild: boolean }
   | {
       t: 'notify';
       kind: NotifyKind;
@@ -150,7 +167,7 @@ export type ServerMsg =
       reply?: boolean;
       text?: string;
     }
-  | { t: 'adminState'; areaAllowed: Record<string, string[]> }
+  | { t: 'adminState'; areaAllowed: Record<string, string[]>; buildingEnabled?: boolean }
   | {
       t: 'sprites';
       sprites: SpriteIndex;

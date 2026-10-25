@@ -1,4 +1,4 @@
-// Writes a blank guide sheet to paint over: `npm run sprites:template [--size 16|32] [--out file.png]`
+// Writes a blank guide sheet to paint over: `npm run sprites:template [--size 32|16] [--out file.png]` (32 by default)
 import fs from 'node:fs';
 import path from 'node:path';
 import { PNG } from 'pngjs';
@@ -10,7 +10,7 @@ const flag = (name: string) => {
   return i >= 0 ? args[i + 1] : undefined;
 };
 
-const size = Number(flag('size') ?? 16);
+const size = Number(flag('size') ?? 32);
 if (!(FRAME_SIZES as readonly number[]).includes(size)) {
   console.error(`--size must be ${FRAME_SIZES.join(' or ')}`);
   process.exit(1);

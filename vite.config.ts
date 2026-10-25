@@ -5,6 +5,8 @@ export default defineConfig({
     proxy: {
       '/ws': { target: 'ws://localhost:3001', ws: true },
       '/sprites': 'http://localhost:3001',
+      '/objects': 'http://localhost:3001',
+      '/api': 'http://localhost:3001',
     },
   },
 });

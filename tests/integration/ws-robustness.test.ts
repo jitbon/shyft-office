@@ -138,9 +138,9 @@ describe('two tabs of one browser', () => {
     const id = crypto.randomUUID();
     const tab1 = await connectClient(server.port, 'Sam', { memberId: id });
     clients.push(tab1);
-    tab1.at(4.5, 12.5); // the chair of desk pod-1:4,12
-    tab1.send({ t: 'desk', op: 'claim', deskId: 'pod-1:4,12' });
-    await tab1.next('office', (m) => m.desks.some((d) => d.id === 'pod-1:4,12'));
+    tab1.at(6.5, 12.5); // the chair of desk desk-5-13
+    tab1.send({ t: 'desk', op: 'claim', deskId: 'desk-5-13' });
+    await tab1.next('office', (m) => m.desks.some((d) => d.id === 'desk-5-13'));
     tab1.send({ t: 'desk', op: 'lock' });
     await tab1.next('office', (m) => m.desks.some((d) => d.locked));
 
@@ -150,12 +150,12 @@ describe('two tabs of one browser', () => {
     // The server announces the departure, then sends the office state as it is after it.
     await tab1.next('leave', (m) => m.id === tab2.id);
     const after = await tab1.next('office');
-    expect(after.desks.find((d) => d.id === 'pod-1:4,12')?.locked).toBe(true);
+    expect(after.desks.find((d) => d.id === 'desk-5-13')?.locked).toBe(true);
 
     // When the last tab goes, the lock does end.
     const watcher = await connectClient(server.port, 'Watcher');
     clients.push(watcher);
     tab1.close();
-    await watcher.next('office', (m) => m.desks.some((d) => d.id === 'pod-1:4,12' && !d.locked));
+    await watcher.next('office', (m) => m.desks.some((d) => d.id === 'desk-5-13' && !d.locked));
   });
 });
