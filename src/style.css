@@ -388,3 +388,44 @@ body.building #statusPanel, body.building #adminPanel, body.building #help, body
   #help { display: none; }
   #people { max-height: 22vh; }
 }
+#builderPanel .items { display: flex; flex-direction: column; gap: 8px; }
+#builderPanel .groups { display: flex; flex-wrap: wrap; gap: 4px; }
+#builderPanel .groups button { padding: 3px 8px; font-size: 12px; }
+#builderPanel .groups button.on { border-color: var(--accent); }
+#builderPanel .filters { display: flex; gap: 6px; }
+#builderPanel .filters select, #builderPanel .filters input { flex: 1; min-width: 0; padding: 4px 6px; }
+
+/* The furniture studio */
+#studio { position: fixed; inset: 3vh 3vw; z-index: 30; display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); backdrop-filter: blur(6px); color: var(--text); }
+#studio[hidden] { display: none; }
+#studio .sbody { flex: 1; min-height: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr) 260px; gap: 12px; }
+#studio .sparts, #studio .sprops, #studio .smiddle { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; }
+#studio .sshapes { display: flex; flex-wrap: wrap; gap: 4px; }
+#studio .sshapes button, #studio .sviews button { padding: 3px 8px; font-size: 12px; }
+#studio .slist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; flex: 1; min-height: 80px; overflow-y: auto; }
+#studio .slist li { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; font-size: 13px; }
+#studio .slist li.on { border-color: var(--accent); background: rgba(241, 196, 83, 0.12); }
+#studio .chip { width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--line); flex: none; }
+#studio .smiddle { align-items: center; }
+#studio .spreview { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+#studio .studio3d { width: 360px; max-width: 100%; image-rendering: pixelated; border-radius: var(--radius-sm); cursor: grab; touch-action: none; }
+#studio .studiotop { max-width: 100%; border-radius: var(--radius-sm); background: rgba(0, 0, 0, 0.2); image-rendering: pixelated; touch-action: none; cursor: crosshair; }
+#studio .sviews { display: flex; gap: 4px; }
+#studio .sprops label { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; }
+#studio .sprops label > span:first-child { color: var(--muted); }
+#studio .sprops input[type=text], #studio .sprops select, #studio .sprops input[type=number] { width: 130px; padding: 3px 6px; }
+#studio .sprops .pair { display: flex; align-items: center; gap: 4px; }
+#studio .sprops .pair input { width: 56px; }
+#studio .pgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+#studio .pgrid input { width: 64px !important; }
+#studio .sbottom { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#studio .snotes { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 2px; }
+#studio .bnote { color: var(--muted); font-size: 13px; }
+#studio .bwarn { color: var(--accent); font-size: 13px; }
+#studio .primary { background: var(--accent); color: var(--ink); font-weight: 800; }
+@media (max-width: 900px) { #studio .sbody { grid-template-columns: 1fr; overflow-y: auto; } }
+#studio .shelper { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+#studio .shelper.off { opacity: 0.6; }
+#studio .shelper textarea { width: 100%; box-sizing: border-box; resize: vertical; font: inherit; padding: 4px 6px; }
+#builderPanel .primary { background: var(--accent); color: var(--ink); font-weight: 800; }
+#builderPanel .pick .credit { color: var(--muted); font-size: 10px; line-height: 1.1; text-align: center; }

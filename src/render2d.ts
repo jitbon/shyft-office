@@ -1,6 +1,8 @@
 import { FURNITURE, WALLS, areaAt, getWorld, type World } from '../shared/map';
 import type { WorldObject } from '../shared/world';
 import { frameAt, viewCanvas } from './custom-objects';
+import { drawablesOf, isPictured, tileSignatures, type Drawable } from './drawables';
+import { flatPicture, itemPicture } from './item2d';
 import { TILE, drawFloor, drawFurniture2D, drawTurned2D, drawWall2D, drawWelcomeMat, makeCanvas, type Dir } from './art';
 import type { DeskTag } from './office-ui';
 import { statusColor, walkFrame, type Player } from './types';
@@ -44,6 +46,12 @@ function paintTile(ctx: CanvasRenderingContext2D, w: World, x: number, y: number
   if (pass === 'floor') {
     drawFloor(ctx, w.floor[y][x], x * TILE, y * TILE, x, y);
     if (t === 'S') drawWelcomeMat(ctx, x * TILE, y * TILE);
+    // Floor art lies on the floor, in list order, so the later piece is on top.
+    for (const a of w.floorArt) {
+      if (x >= a.x && y >= a.y && x < a.x + a.w && y < a.y + a.d) {
+        ctx.drawImage(flatPicture(a.item, a.rot), (x - a.x) * TILE, (y - a.y) * TILE, TILE, TILE, x * TILE, y * TILE, TILE, TILE);
+      }
+    }
     return;
   }
   if (WALLS.has(t)) {
@@ -62,6 +70,44 @@ function paintTile(ctx: CanvasRenderingContext2D, w: World, x: number, y: number
   }
 }
 
+/** Wall decor on a face other than the south one is a thin strip along that edge of the wall tile. */
+const STRIP = 6;
+
+/** Draws one picture-made thing: a floor item, a desk item or wall decor. */
+function paintDrawable(ctx: CanvasRenderingContext2D, d: Drawable) {
+  const { canvas, pad } = itemPicture(d.item, d.rot);
+  const lifted = d.base * TILE * 0.5; // a desk's top, or how high a poster hangs
+  if (d.kind === 'wall' && d.face && d.face !== 's') {
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    const cx = (d.x + 0.5) * TILE, cy = (d.y + 0.5) * TILE, len = Math.min(TILE, d.w * TILE);
+    if (d.face === 'n') ctx.drawImage(canvas, cx - len / 2, d.y * TILE, len, STRIP);
+    else if (d.face === 'e') ctx.drawImage(canvas, (d.x + 1) * TILE - STRIP, cy - len / 2, STRIP, len);
+    else ctx.drawImage(canvas, d.x * TILE, cy - len / 2, STRIP, len);
+    ctx.restore();
+    return;
+  }
+  const left = d.kind === 'wall' ? (d.x + 0.5) * TILE - (d.w * TILE) / 2 : d.x * TILE;
+  const bottom = d.kind === 'wall' ? (d.y + 1) * TILE - lifted : (d.y + d.d) * TILE - lifted;
+  // The picture's footprint ends `pad` pixels above its bottom edge, so that edge goes at `bottom + pad`.
+  ctx.drawImage(canvas, Math.round(left - pad), Math.round(bottom + pad - canvas.height));
+}
+
+/** Paints the picture-made things, back to front. With `only`, just those touching one of those tiles. */
+function paintDrawables(ctx: CanvasRenderingContext2D, w: World, only?: Set<number>) {
+  for (const d of drawablesOf(w)) {
+    if (d.kind === 'floorart' || !isPictured(d.item)) continue;
+    if (only) {
+      let touches = false;
+      for (let y = Math.max(0, d.y0); y <= Math.min(w.h - 1, d.y1) && !touches; y++) {
+        for (let x = Math.max(0, d.x0); x <= Math.min(w.w - 1, d.x1); x++) if (only.has(y * w.w + x)) { touches = true; break; }
+      }
+      if (!touches) continue;
+    }
+    paintDrawable(ctx, d);
+  }
+}
+
 /** Pre-renders the static office (floors, walls, furniture) once. */
 export function buildMapCanvas(w: World = getWorld()): HTMLCanvasElement {
   const [c, ctx] = makeCanvas(w.w * TILE, w.h * TILE);
@@ -69,6 +115,7 @@ export function buildMapCanvas(w: World = getWorld()): HTMLCanvasElement {
   for (const pass of ['floor', 'top'] as const) {
     for (let y = 0; y < w.h; y++) for (let x = 0; x < w.w; x++) paintTile(ctx, w, x, y, pass, drawn);
   }
+  paintDrawables(ctx, w);
   return c;
 }
 
@@ -79,11 +126,13 @@ export function buildMapCanvas(w: World = getWorld()): HTMLCanvasElement {
 export function updateMapCanvas(c: HTMLCanvasElement, prev: World, next: World): boolean {
   if (prev.w !== next.w || prev.h !== next.h) return false;
   const changed = new Set<number>();
+  const before = tileSignatures(prev), after = tileSignatures(next);
   for (let y = 0; y < next.h; y++) {
     for (let x = 0; x < next.w; x++) {
-      // A chair or desk turned on the spot leaves the same tile code but looks different.
+      // A chair or desk turned on the spot leaves the same tile code but looks different; so does a picture that moved.
       if (prev.grid[y][x] !== next.grid[y][x] || prev.floor[y][x] !== next.floor[y][x]
-        || facingAt(prev, x, y)?.obj.rot !== facingAt(next, x, y)?.obj.rot) changed.add(y * next.w + x);
+        || facingAt(prev, x, y)?.obj.rot !== facingAt(next, x, y)?.obj.rot
+        || before[y * next.w + x] !== after[y * next.w + x]) changed.add(y * next.w + x);
     }
   }
   if (!changed.size) return true;
@@ -112,6 +161,7 @@ export function updateMapCanvas(c: HTMLCanvasElement, prev: World, next: World):
   for (const pass of ['floor', 'top'] as const) {
     for (const k of order) paintTile(ctx, next, k % next.w, Math.floor(k / next.w), pass, drawn);
   }
+  paintDrawables(ctx, next, draw);
   ctx.restore();
   return true;
 }
@@ -243,6 +293,12 @@ export class Renderer2D {
   /** The world being shown. */
   get shown(): World {
     return this.built;
+  }
+
+  /** The map point under a point of the page (CSS pixels), in tiles with fractions. */
+  pointUnder(px: number, py: number): { x: number; y: number } {
+    const { ox, oy, s, dpr } = this.view;
+    return { x: (px * dpr - ox) / s, y: (py * dpr - oy) / s };
   }
 
   /** The map tile under a point of the page (CSS pixels). */

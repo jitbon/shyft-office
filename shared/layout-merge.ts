@@ -1,8 +1,8 @@
 // Three-way merge of two edits made from the same starting layout. A change made on one side only is kept; the same
 // change on both sides is fine; different changes to the same unit are a clash the builder has to settle.
 // Units: one floor tile, one wall tile, one object, one room, one pod, the spawn point, and the grid size.
-import { footprintOf } from './catalog';
-import { NO_WALL, type Layout, type PlacedObject, type Pod, type Rect, type Room } from './layout';
+import { currentCatalog, footprintOf, type Catalog } from './catalog';
+import { NO_WALL, normalizeLayout, type Layout, type PlacedObject, type Pod, type Rect, type Room } from './layout';
 
 export interface Clash {
   /** `floor:x,y`, `wall:x,y`, `obj:<id>`, `room:<id>`, `pod:<id>`, `spawn` or `size`. */
@@ -30,7 +30,7 @@ function units(l: Layout): Map<string, string> {
       m.set(`wall:${x},${y}`, l.walls[y * l.w + x]);
     }
   }
-  for (const o of l.objects) m.set(`obj:${o.id}`, stable([o.kind, o.x, o.y, o.rot]));
+  for (const o of l.objects) m.set(`obj:${o.id}`, stable([o.kind, o.x, o.y, o.rot, o.v ?? null, o.on ?? null, o.at ?? null, o.wall ?? null]));
   for (const r of l.rooms) m.set(`room:${r.id}`, stable(r));
   for (const p of l.pods) m.set(`pod:${p.id}`, stable(p));
   return m;
@@ -68,6 +68,7 @@ export function mergeLayouts(
   theirs: Layout,
   mine: Layout,
   resolve: Record<string, Side> = {},
+  catalog: Catalog = currentCatalog(),
 ): { merged: Layout; clashes: Clash[] } {
   const b = base ? units(base) : null, t = units(theirs), m = units(mine);
   const result = new Map<string, string | undefined>();
@@ -103,8 +104,8 @@ export function mergeLayouts(
   for (const o of ordered(theirs.objects, mine.objects)) {
     const v = result.get(`obj:${o.id}`);
     if (v === undefined) continue;
-    const [kind, x, y, rot] = JSON.parse(v);
-    objects.push({ id: o.id, kind, x, y, rot });
+    const [kind, x, y, rot, pin, on, at, wall] = JSON.parse(v);
+    objects.push({ id: o.id, kind, x, y, rot, ...(pin === null ? {} : { v: pin }), ...(on === null ? {} : { on }), ...(at === null ? {} : { at }), ...(wall === null ? {} : { wall }) });
   }
   const pick = <T extends { id: string }>(prefix: string, a: T[]) => {
     const out: T[] = [];
@@ -114,13 +115,12 @@ export function mergeLayouts(
     }
     return out;
   };
-  return {
-    merged: {
-      w, h, floor, walls, objects,
-      rooms: pick<Room>('room', ordered(theirs.rooms, mine.rooms)),
-      pods: pick<Pod>('pod', ordered(theirs.pods, mine.pods)),
-      spawn: { x: sp[0], y: sp[1] },
-    },
-    clashes,
+  // A desk item whose desk the other person deleted goes with it, and so on: the merged layout is made consistent.
+  const merged: Layout = {
+    w, h, floor, walls, objects,
+    rooms: pick<Room>('room', ordered(theirs.rooms, mine.rooms)),
+    pods: pick<Pod>('pod', ordered(theirs.pods, mine.pods)),
+    spawn: { x: sp[0], y: sp[1] },
   };
+  return { merged: normalizeLayout(merged, catalog).layout, clashes };
 }

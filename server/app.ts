@@ -5,18 +5,21 @@ import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import os from 'node:os';
-import { currentCatalog, setCustomObjects } from '../shared/catalog';
+import { currentCatalog, setCustomObjects, setStudioItems } from '../shared/catalog';
 import {
   AREAS, MAP_H, MAP_W, SPAWN, areaAt, areaById, deskAt, deskById, isBlocking, nearestFreeTile, nearestFreeTileNear, setWorld, validateOffice,
 } from '../shared/map';
 import { compileWorld } from '../shared/world';
-import type { ClientMsg, Look, PlayerState, ServerMsg } from '../shared/protocol';
+import type { ClientMsg, ItemInfo, Look, PlayerState, ServerMsg } from '../shared/protocol';
 import { isMemberId, isUuid } from '../shared/member';
 import { positionContext } from '../shared/proximity';
 import { cleanStatus, expireStatus } from '../shared/status';
 import { handleApi, type ApiContext } from './api';
 import { LayoutStore } from './layout-store';
 import { ObjectsStore } from './objects';
+import { Helper, type Drafter } from './helper';
+import { ItemsStore } from './items';
+import { pinnedVersions } from '../shared/items-edit';
 import { LinkEngine } from './links';
 import { OfficeState } from './office';
 import { loadSprites, noSprites, validateAvatarChoice } from './sprites';
@@ -40,6 +43,14 @@ export interface ServerOptions {
   publishCooldownMs?: number;
   /** Least time between one member's draft saves. Default 0.5 s. */
   draftCooldownMs?: number;
+  /** The service the item helper asks for drafts; none means the helper is unavailable. */
+  drafter?: Drafter;
+  /** How long the helper waits for an answer. Default 60 s. */
+  helperTimeoutMs?: number;
+  /** Most item saves one member may make in a minute. Default 20. */
+  itemSavesPerMinute?: number;
+  /** Least time between one member's studio draft saves. Default 1 s. */
+  studioDraftCooldownMs?: number;
   /** How often idle connections are pinged. One that misses a whole round is dropped, so a dead one goes within twice this. */
   pingMs?: number;
 }
@@ -183,7 +194,13 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
   // Custom objects first: a layout may place them. Then the published layout, before saved desk claims, which are matched against its desks.
   const objects = ObjectsStore.load(path.join(dataDir, 'objects'));
   setCustomObjects(objects.list());
+  const items = ItemsStore.load(path.join(dataDir, 'items'));
+  setStudioItems(items.records(), items.olderRecords()); // before the layouts: a layout may place them, or pin a copy to an older version
   const layouts = LayoutStore.load(dataDir);
+  items.prune(pinnedVersions(layouts.current.layout));
+  items.pruneDrafts();
+  const draftPruner = setInterval(() => items.pruneDrafts(), 24 * 60 * 60 * 1000);
+  draftPruner.unref();
   setWorld(compileWorld(layouts.current.layout, currentCatalog()));
   layouts.pruneDrafts();
   const pruner = setInterval(() => layouts.pruneDrafts(), 24 * 60 * 60 * 1000);
@@ -194,6 +211,23 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     state: opts.dataDir ? loadState(opts.dataDir) : undefined,
     onChange: () => store?.save(office.persistState()),
   });
+  const helper = new Helper({ drafter: opts.drafter, enabled: () => office.helperEnabled, timeoutMs: opts.helperTimeoutMs });
+  /** Tells everyone who can build how the helper is, now and again when a cool-down after a failure ends. */
+  let helperTimer: NodeJS.Timeout | undefined;
+  const broadcastHelper = () => {
+    const status = helper.status();
+    const cooling = status === 'unavailable' && helper.retryAt() !== undefined;
+    for (const o of conns.values()) if (canBuild(o)) send(o.ws, { t: 'helper', status, ...(cooling ? { cooling } : {}) });
+    clearTimeout(helperTimer);
+    const at = helper.retryAt();
+    if (at) {
+      helperTimer = setTimeout(broadcastHelper, at - Date.now() + 50);
+      helperTimer.unref();
+    }
+  };
+  const itemInfos = (): ItemInfo[] => items.list().map((i) => ({
+    id: `item:${i.id}`, name: i.def.name, group: i.def.group, ...(i.def.season ? { season: i.def.season } : {}), kind: i.def.kind, by: i.by.name, version: i.version,
+  }));
   const canBuild = (c: Conn) => !c.p.memberId.startsWith('eph-') && (c.isAdmin || office.buildingEnabled);
   const apiContext: ApiContext = {
     layouts,
@@ -202,6 +236,15 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       setCustomObjects(objects.list());
       broadcast({ t: 'objects', objects: objects.list() });
     },
+    items,
+    helper,
+    helperChanged: () => broadcastHelper(),
+    itemsChanged: () => {
+      setStudioItems(items.records(), items.olderRecords());
+      broadcast({ t: 'items', items: itemInfos() });
+    },
+    itemSavesPerMinute: opts.itemSavesPerMinute ?? 20,
+    studioDraftCooldownMs: opts.studioDraftCooldownMs ?? 1000,
     uploadsPerMinute: opts.uploadsPerMinute ?? 10,
     catalog: () => currentCatalog(),
     caller: (token) => {
@@ -237,7 +280,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (!c.isAdmin) return;
     const areaAllowed: Record<string, string[]> = {};
     for (const a of AREAS) if (a.restricted) areaAllowed[a.id] = office.allowedFor(a.id);
-    send(c.ws, { t: 'adminState', areaAllowed, buildingEnabled: office.buildingEnabled });
+    send(c.ws, { t: 'adminState', areaAllowed, buildingEnabled: office.buildingEnabled, helperEnabled: office.helperEnabled });
   };
 
   wss.on('connection', (ws) => {
@@ -272,6 +315,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
    */
   function applyPublish(layout: import('../shared/layout').Layout, by: import('./layout-store').Publisher) {
     const rev = layouts.publish(layout, by);
+    items.prune(pinnedVersions(rev.layout)); // an older version nobody is pinned to any more is not kept
     setWorld(compileWorld(rev.layout, currentCatalog()));
     // Desks that are gone lose their claim; each holder hears about it, now if online, otherwise on their next join.
     for (const { memberId, deskId } of office.reconcile().released) {
@@ -341,6 +385,8 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         layoutRev: layouts.current.rev,
         canBuild: canBuild(c),
         objects: objects.list(),
+        items: itemInfos(),
+        ...(canBuild(c) ? { helper: helper.status(), ...(helper.retryAt() !== undefined && helper.status() === 'unavailable' ? { helperCooling: true } : {}) } : {}),
       });
       sendAdminState(c);
       // Someone who lost their desk when the office was redesigned or updated hears about it once, on their first join.
@@ -467,6 +513,16 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
           office.save();
         }
         for (const o of conns.values()) send(o.ws, { t: 'building', enabled: office.buildingEnabled, canBuild: canBuild(o) });
+      } else if (msg.op === 'helper' && typeof msg.enabled === 'boolean') {
+        // Only with a service set up: with no key it stays unavailable and cannot be switched on.
+        if (!msg.enabled || helper.configured) {
+          if (office.helperEnabled !== msg.enabled) {
+            office.helperEnabled = msg.enabled;
+            office.save();
+          }
+          broadcastHelper();
+          for (const o of conns.values()) sendAdminState(o); // every admin's switch shows the new setting
+        }
       } else if (msg.op === 'areaAllowed' && areaById(String(msg.areaId)) && Array.isArray(msg.memberIds)) {
         const ids = msg.memberIds.filter(isUuid).slice(0, 200);
         office.setAreaAllowed(msg.areaId, ids.map((m) => m.toLowerCase()));

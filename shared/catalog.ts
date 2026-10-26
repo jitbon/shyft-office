@@ -1,7 +1,9 @@
 // Everything a builder can place. Each item says how big it is, whether it blocks walking, which tile code it
 // leaves in the compiled grid, and (for first person) what shape it is.
+import { GROUPS, itemHeight, partsToBoxes, type Group, type ItemDefinition, type Kind, type Season } from './items';
 import { parseLayout, rotFootprint, type ParseResult } from './layout';
 import { customCatalogItem, type CustomObject } from './objects';
+import { READY_MADE } from './readymade';
 
 /** A solid box in tile units, in the item's unturned frame (facing south). z is height above the floor. */
 export interface Box {
@@ -32,11 +34,25 @@ export interface CatalogItem {
   facing: boolean;
   model: Box[];
   custom?: boolean;
+  /** The heading it is listed under in the catalog. */
+  group: Group;
+  season?: Season;
+  /** Where it goes: on the floor, on a desk, on a wall, or flat on the floor. */
+  kind: Kind;
+  /** Who made it: a member's name, or `Shyft` for what ships with the app. */
+  by: string;
+  version: number;
+  /** For items that desk items can stand on: the height of their top. */
+  surface?: number;
+  /** For wall decor: how high its bottom hangs. */
+  hang?: number;
 }
+
+export { GROUPS };
 
 export type Catalog = ReadonlyMap<string, CatalogItem>;
 
-const item = (i: Omit<CatalogItem, 'model'> & { model?: Box[] }): CatalogItem => ({ model: [], ...i });
+const item = (i: Omit<CatalogItem, 'model' | 'kind' | 'by' | 'version'> & { model?: Box[] }): CatalogItem => ({ model: [], kind: 'floor', by: 'Shyft', version: 1, ...i });
 const box = (x: number, y: number, z: number, w: number, d: number, h: number, mat: Box['mat']): Box => ({ x, y, z, w, d, h, mat });
 
 /** A desk of `w` tiles: top, side panels, a back panel, and a monitor, keyboard and papers. Its front faces south. */
@@ -56,10 +72,10 @@ function deskModel(w: number): Box[] {
 }
 
 const BUILT_IN: CatalogItem[] = [
-  item({ id: 'desk', name: 'Desk', footprint: [3, 1], blocks: true, tile: 'd', facing: true, model: deskModel(3) }),
-  item({ id: 'desk-small', name: 'Small desk', footprint: [2, 1], blocks: true, tile: 'd', facing: true, model: deskModel(2) }),
+  item({ id: 'desk', name: 'Desk', group: 'desks', footprint: [3, 1], blocks: true, tile: 'd', facing: true, surface: 0.31, model: deskModel(3) }),
+  item({ id: 'desk-small', name: 'Small desk', group: 'desks', footprint: [2, 1], blocks: true, tile: 'd', facing: true, surface: 0.31, model: deskModel(2) }),
   item({
-    id: 'chair', name: 'Chair', footprint: [1, 1], blocks: false, tile: 'h', facing: true,
+    id: 'chair', name: 'Chair', group: 'chairs', footprint: [1, 1], blocks: false, tile: 'h', facing: true,
     model: [
       box(0.25, 0.25, 0, 0.5, 0.5, 0.04, 'metalDark'),
       box(0.45, 0.45, 0.04, 0.1, 0.1, 0.14, 'metal'),
@@ -68,14 +84,14 @@ const BUILT_IN: CatalogItem[] = [
     ],
   }),
   item({
-    id: 'table', name: 'Table', footprint: [1, 1], blocks: true, tile: 't', facing: false,
+    id: 'table', name: 'Table', group: 'desks', footprint: [1, 1], blocks: true, tile: 't', facing: false,
     model: [
       box(0.4, 0.4, 0, 0.2, 0.2, 0.2, 'tableLeg'),
       box(0, 0, 0.2, 1, 1, 0.06, { top: 'tableTop', side: 'tableLeg', front: 'tableLeg' }),
     ],
   }),
   item({
-    id: 'plant', name: 'Plant', footprint: [1, 1], blocks: true, tile: 'p', facing: false,
+    id: 'plant', name: 'Plant', group: 'decorations', footprint: [1, 1], blocks: true, tile: 'p', facing: false,
     model: [
       box(0.3, 0.3, 0, 0.4, 0.4, 0.18, 'pot'),
       box(0.2, 0.2, 0.18, 0.6, 0.6, 0.24, 'leaf'),
@@ -84,7 +100,7 @@ const BUILT_IN: CatalogItem[] = [
     ],
   }),
   item({
-    id: 'sofa', name: 'Sofa', footprint: [1, 1], blocks: true, tile: 's', facing: true,
+    id: 'sofa', name: 'Sofa', group: 'chairs', footprint: [1, 1], blocks: true, tile: 's', facing: true,
     model: [
       box(0.02, 0.1, 0.03, 0.96, 0.84, 0.17, 'sofaDark'),
       box(0.1, 0.24, 0.2, 0.8, 0.68, 0.07, 'sofa'),
@@ -99,8 +115,33 @@ let builtIn: Catalog | undefined;
 
 /** The furniture that ships with the app. */
 export function builtInCatalog(): Catalog {
-  builtIn ??= new Map(BUILT_IN.map((i) => [i.id, i]));
+  builtIn ??= new Map([
+    ...BUILT_IN,
+    ...READY_MADE.map(({ id, ...def }) => catalogFromDefinition(def, { id, by: 'Shyft', version: 1 })),
+  ].map((i) => [i.id, i]));
   return builtIn;
+}
+
+const groupRank = new Map(GROUPS.map((g, i) => [g.id, i]));
+
+/** Every item a builder can pick, grouped in the order of `GROUPS`; inside a group, the six built-ins and ready-made first, then others, each in the catalog's order. */
+export function catalogItems(catalog: Catalog = currentCatalog()): CatalogItem[] {
+  return [...catalog.values()]
+    .map((it, i) => ({ it, i }))
+    .sort((a, b) => (groupRank.get(a.it.group) ?? 99) - (groupRank.get(b.it.group) ?? 99) || a.i - b.i)
+    .map((e) => e.it);
+}
+
+export interface CatalogFilter {
+  group?: Group;
+  season?: Season;
+  text?: string;
+}
+
+/** The items that match every filter given; an item with no season never matches a season. Keeps the order it was given. */
+export function filterCatalog(items: readonly CatalogItem[], f: CatalogFilter = {}): CatalogItem[] {
+  const text = f.text?.trim().toLowerCase();
+  return items.filter((i) => (!f.group || i.group === f.group) && (!f.season || i.season === f.season) && (!text || i.name.toLowerCase().includes(text)));
 }
 
 /** Built-in items plus any custom objects. */
@@ -111,13 +152,69 @@ export function withCustom(custom: readonly CatalogItem[]): Catalog {
   return m;
 }
 
+/** An item made in the studio, as the server stores it. */
+export interface StudioRecord {
+  /** Without the `item:` prefix. */
+  id: string;
+  def: ItemDefinition;
+  by: string;
+  version: number;
+}
+
+/** A catalog entry for an item definition: its parts as the first-person model, with where it goes and who made it. */
+export function catalogFromDefinition(def: ItemDefinition, meta: { id: string; by: string; version: number }): CatalogItem {
+  return {
+    id: meta.id,
+    name: def.name,
+    footprint: def.footprint,
+    blocks: def.kind === 'floor' && def.blocks !== false,
+    tile: 'x',
+    facing: true,
+    model: partsToBoxes(def),
+    group: def.group,
+    ...(def.season ? { season: def.season } : {}),
+    kind: def.kind,
+    by: meta.by,
+    version: meta.version,
+    ...(def.group === 'desks' && def.kind === 'floor' ? { surface: itemHeight(def) } : {}),
+    ...(def.kind === 'wall' ? { hang: def.hang ?? 0.35 } : {}),
+  };
+}
+
 let active: Catalog = builtInCatalog();
 let customList: CustomObject[] = [];
+let studioList: StudioRecord[] = [];
+let customItems: CatalogItem[] = [];
+let studioItems_: CatalogItem[] = [];
+/** Older versions of studio items that some placed copy is pinned to: `<id>@<version>` to entry. */
+let versions = new Map<string, CatalogItem>();
+
+const rebuild = () => {
+  active = withCustom([...customItems, ...studioItems_]);
+};
 
 /** Tells everything on this side which custom objects exist (the server loaded them; the browser was told). */
 export function setCustomObjects(objects: readonly CustomObject[]) {
   customList = [...objects];
-  active = withCustom(customList.map(customCatalogItem));
+  customItems = customList.map(customCatalogItem);
+  rebuild();
+}
+
+/** Tells everything on this side which studio items exist, and the older versions that placed copies are pinned to. */
+export function setStudioItems(records: readonly StudioRecord[], older: readonly StudioRecord[] = []) {
+  studioList = [...records];
+  studioItems_ = studioList.map((r) => catalogFromDefinition(r.def, { id: `item:${r.id}`, by: r.by, version: r.version }));
+  versions = new Map(older.map((r) => [`item:${r.id}@${r.version}`, catalogFromDefinition(r.def, { id: `item:${r.id}`, by: r.by, version: r.version })]));
+  rebuild();
+}
+
+export const studioItems = (): readonly StudioRecord[] => studioList;
+
+/** The catalog entry for `kind`, as of version `v` when a copy is pinned to one and that version is still kept. */
+export function itemAt(kind: string, v?: number, catalog: Catalog = active): CatalogItem | undefined {
+  const now = catalog.get(kind);
+  if (v === undefined || !now || now.version === v) return now;
+  return versions.get(`${kind}@${v}`) ?? now;
 }
 
 /** The built-in furniture plus every custom object, as of now. */
@@ -133,7 +230,7 @@ export function footprintOf(kind: string, rot: number, catalog: Catalog = curren
 
 /** `parseLayout` against a catalog. */
 export function parseLayoutWith(raw: unknown, catalog: Catalog = currentCatalog()): ParseResult {
-  return parseLayout(raw, (k) => catalog.has(k), (k) => catalog.get(k)?.footprint);
+  return parseLayout(raw, (k) => catalog.has(k), (k) => catalog.get(k)?.footprint, (k) => catalog.get(k)?.kind);
 }
 
 // ------------------------------------------------------------------ prefabs

@@ -29,6 +29,8 @@ export interface StoredState {
   deskNotice: DeskNotice[];
   /** Whether non-admin members can edit the office layout. */
   buildingEnabled: boolean;
+  /** Whether an admin has switched the item helper on. Off until they do. */
+  helperEnabled: boolean;
 }
 
 const FILE = 'office-state.json';
@@ -36,7 +38,7 @@ const MAX_ALLOWED = 200;
 const MAX_NOTICE = 500;
 
 export const emptyState = (): StoredState => ({
-  version: 3, deskClaims: {}, podModes: {}, areaAllowed: {}, deskNotice: [], buildingEnabled: true,
+  version: 3, deskClaims: {}, podModes: {}, areaAllowed: {}, deskNotice: [], buildingEnabled: true, helperEnabled: false,
 });
 
 const realMember = (id: unknown): id is string =>
@@ -136,6 +138,7 @@ export function parseState(raw: unknown): StoredState {
   }
   out.deskNotice = notices([...kept, ...lost]);
   out.buildingEnabled = version === 3 ? r.buildingEnabled !== false : true;
+  out.helperEnabled = version === 3 && r.helperEnabled === true;
   return out;
 }
 

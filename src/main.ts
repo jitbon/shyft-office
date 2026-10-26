@@ -2,7 +2,7 @@ import './style.css';
 import { MAP_H, MAP_W, SPAWN, moveWithCollision, areaAt, deskAt, getWorld, onWorldChange } from '../shared/map';
 import { gainFor } from '../shared/proximity';
 import type {
-  AvatarChoice, ChatScope, ClientMsg, ConversationInfo, Link, PlayerState, PlayerStatus, ServerMsg, ViewMode,
+  AvatarChoice, ChatScope, ClientMsg, ConversationInfo, ItemInfo, Link, PlayerState, PlayerStatus, ServerMsg, ViewMode,
 } from '../shared/protocol';
 import { expireStatus } from '../shared/status';
 import { loadAvatar, makeAvatar } from './art';
@@ -22,6 +22,9 @@ import { defaultZoom, rescale, stepZoom } from './scale';
 import { handleSocialNotify, initStatus, refreshStatusUi } from './status';
 import { statusColor, type Player } from './types';
 import { updateCustomObjects } from './custom-objects';
+import { syncItems, onItemsChanged } from './items-client';
+import { Studio } from './studio/studio';
+import { onHelperStatus, setHelperStatus } from './studio/helper-ui';
 import { loadLayout, recompile } from './world-client';
 
 const WALK_SPEED = 3.6; // tiles per second
@@ -42,7 +45,12 @@ const buildBtn = $<HTMLButtonElement>('buildBtn');
 const net = new Net();
 const media = new MeshTransport();
 const callPanel = new CallPanel($('callPanel'));
+const studio = new Studio({
+  notice: (text) => notice(text, { key: 'studio', ttlMs: 3000 }),
+  onItemChanged: (id) => builder.itemSaved(id),
+});
 const builder = new Builder({
+  openStudio: (seed) => void studio.open(seed),
   canvas,
   renderer: renderer2d,
   panel: $('builderPanel'),
@@ -53,6 +61,8 @@ const builder = new Builder({
     buildBtn.classList.remove('on');
   },
 });
+onItemsChanged(() => builder.refreshPanel());
+onHelperStatus(() => studio.refresh());
 const micBtn = $<HTMLButtonElement>('micBtn');
 const camBtn = $<HTMLButtonElement>('camBtn');
 const chatScopeBtn = $<HTMLButtonElement>('chatScope');
@@ -104,6 +114,7 @@ function typingInField(target: EventTarget | null) {
 }
 
 window.addEventListener('keydown', (e) => {
+  if (studio.isOpen) return; // the studio handles its own keys
   if (!me || !$('join').hidden) return; // still joining, or choosing a character
   if (document.activeElement === chatInput) {
     if (e.key === 'Escape') chatInput.blur();
@@ -447,7 +458,8 @@ function onMessage(msg: ServerMsg) {
       others.clear();
       for (const p of msg.players) others.set(p.id, toPlayer(p));
       renderPeople();
-      void afterWelcome(msg.layoutRev);
+      setHelperStatus(msg.helper, msg.helperCooling);
+      void afterWelcome(msg.layoutRev, msg.items ?? []);
       break;
     case 'join':
       others.set(msg.player.id, toPlayer(msg.player));
@@ -500,11 +512,17 @@ function onMessage(msg: ServerMsg) {
       setOffice(msg);
       break;
     case 'adminState':
-      setAdminState(msg.areaAllowed, msg.buildingEnabled);
+      setAdminState(msg.areaAllowed, msg.buildingEnabled, msg.helperEnabled);
       break;
     case 'objects':
       updateCustomObjects(msg.objects, () => builder.refreshPanel());
       recompile();
+      break;
+    case 'items':
+      void syncItems(msg.items);
+      break;
+    case 'helper':
+      setHelperStatus(msg.status, msg.cooling);
       break;
     case 'layout':
       void onLayoutPublished(msg.rev, msg.by.name);
@@ -554,7 +572,8 @@ function onMessage(msg: ServerMsg) {
 let spawned = false;
 
 /** Loads the published office before our first position goes out, so we start at its spawn point, not an old one. */
-async function afterWelcome(rev: number | undefined) {
+async function afterWelcome(rev: number | undefined, items: ItemInfo[]) {
+  await syncItems(items); // before the office loads: it may place them
   if (rev !== undefined && rev !== session.layoutRev) await loadLayout();
   if (!spawned) {
     me.x = SPAWN.x;

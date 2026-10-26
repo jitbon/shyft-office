@@ -2,9 +2,11 @@
 // changed, so undo can keep it), or says why the edit is not possible. No screen or network in here.
 import { currentCatalog, prefabById, type Catalog } from '../../shared/catalog';
 import {
-  MAX_PODS, MAX_ROOMS, MAX_SIZE, MIN_SIZE, NAME_MAX, NO_WALL, cloneLayout, rotFootprint,
-  type Layout, type PlacedObject, type Pod, type Rect, type Room, type Rot,
+  FACE_STEP, MAX_ON_DESK_TILE, MAX_ON_WALL_FACE, MAX_PODS, MAX_ROOMS, MAX_SIZE, MIN_SIZE, NAME_MAX, NO_WALL, cloneLayout,
+  deskTileOf, normalizeLayout, rotFootprint, unturnPoint,
+  type Face, type Layout, type PlacedObject, type Pod, type Rect, type Room, type Rot,
 } from '../../shared/layout';
+import { compileWorld } from '../../shared/world';
 
 export type Edit = { ok: true; layout: Layout } | { ok: false; error: string };
 export type Tile = [number, number];
@@ -13,15 +15,31 @@ const fail = (error: string): Edit => ({ ok: false, error });
 const inside = (l: Layout, x: number, y: number) => x >= 0 && y >= 0 && x < l.w && y < l.h;
 const setCell = (s: string, i: number, c: string) => s.slice(0, i) + c + s.slice(i + 1);
 
-/** The tiles an object covers. */
-export function coverOf(o: PlacedObject, catalog: Catalog = currentCatalog()): Tile[] {
-  const [w, d] = rotFootprint(catalog.get(o.kind)?.footprint ?? [1, 1], o.rot);
+const kindOf = (o: PlacedObject, catalog: Catalog) => catalog.get(o.kind)?.kind;
+
+/** A layout made consistent after an edit: what lost its desk, wall or item is gone, and what is over the limits. */
+const tidy = (l: Layout, catalog: Catalog): Layout => normalizeLayout(l, catalog).layout;
+
+const tilesOfRect = (x: number, y: number, w: number, d: number): Tile[] => {
   const out: Tile[] = [];
-  for (let y = o.y; y < o.y + d; y++) for (let x = o.x; x < o.x + w; x++) out.push([x, y]);
+  for (let ty = y; ty < y + d; ty++) for (let tx = x; tx < x + w; tx++) out.push([tx, ty]);
   return out;
+};
+
+/** The tiles an object that stands on the floor takes. Desk items, wall decor and floor art take none. */
+export function coverOf(o: PlacedObject, catalog: Catalog = currentCatalog()): Tile[] {
+  if (kindOf(o, catalog) !== 'floor') return [];
+  const [w, d] = rotFootprint(catalog.get(o.kind)?.footprint ?? [1, 1], o.rot);
+  return tilesOfRect(o.x, o.y, w, d);
 }
 
-/** The object standing on a tile, if any. */
+/** The tiles a piece of floor art lies on. */
+export function artTiles(o: PlacedObject, catalog: Catalog = currentCatalog()): Tile[] {
+  const [w, d] = rotFootprint(catalog.get(o.kind)?.footprint ?? [1, 1], o.rot);
+  return tilesOfRect(o.x, o.y, w, d);
+}
+
+/** The object standing on a tile, if any (floor objects only). */
 export function objectAt(l: Layout, x: number, y: number, catalog: Catalog = currentCatalog()): PlacedObject | undefined {
   for (let i = l.objects.length - 1; i >= 0; i--) {
     if (coverOf(l.objects[i], catalog).some(([cx, cy]) => cx === x && cy === y)) return l.objects[i];
@@ -33,16 +51,19 @@ export function objectAt(l: Layout, x: number, y: number, catalog: Catalog = cur
 export function whyNotFit(l: Layout, kind: string, x: number, y: number, rot: number, ignore?: string, catalog: Catalog = currentCatalog()): string | null {
   const item = catalog.get(kind);
   if (!item) return 'That kind of furniture doesn’t exist.';
+  if (item.kind === 'deskitem') return 'Desk items go on a desk.';
+  if (item.kind === 'wall') return 'Hang this on a wall.';
   const [w, d] = rotFootprint(item.footprint, rot);
   const taken = new Set<string>();
-  for (const o of l.objects) if (o.id !== ignore) for (const [cx, cy] of coverOf(o, catalog)) taken.add(`${cx},${cy}`);
+  // Only things that stand on the floor take room: a chair can stand on a rug.
+  if (item.kind === 'floor') for (const o of l.objects) if (o.id !== ignore) for (const [cx, cy] of coverOf(o, catalog)) taken.add(`${cx},${cy}`);
   for (let ty = y; ty < y + d; ty++) {
     for (let tx = x; tx < x + w; tx++) {
       if (!inside(l, tx, ty)) return 'That doesn’t fit inside the office.';
       const wc = l.walls[ty * l.w + tx];
       if (wc && wc !== NO_WALL) return 'There’s a wall in the way.';
       if (taken.has(`${tx},${ty}`)) return 'Something is already there.';
-      if (item.blocks && tx === l.spawn.x && ty === l.spawn.y) return 'That’s where people appear.';
+      if (item.kind === 'floor' && item.blocks && tx === l.spawn.x && ty === l.spawn.y) return 'That’s where people appear.';
     }
   }
   return null;
@@ -61,20 +82,37 @@ export function paintWall(l: Layout, tiles: Tile[], code: string, catalog: Catal
     if (!inside(c, x, y) || (code !== NO_WALL && ((x === c.spawn.x && y === c.spawn.y) || objectAt(c, x, y, catalog)))) continue;
     c.walls = setCell(c.walls, y * c.w + x, code);
   }
-  return c;
+  return tidy(c, catalog); // painting a wall away takes the decor on it too
 }
 
-/** Takes away a wall; or, where there is none, whatever furniture stands there. */
+/**
+ * Takes away what is on a tile, one thing at a time: a wall first (and the decor on it), then what stands on the floor,
+ * then desk items, then floor art, the newest first.
+ */
 export function erase(l: Layout, tiles: Tile[], catalog: Catalog = currentCatalog()): Layout {
   let c = cloneLayout(l);
   for (const [x, y] of tiles) {
     if (!inside(c, x, y)) continue;
     const wc = c.walls[y * c.w + x];
-    if (wc && wc !== NO_WALL) c.walls = setCell(c.walls, y * c.w + x, NO_WALL);
-    else {
-      const o = objectAt(c, x, y, catalog);
-      if (o) c = deleteObject(c, o.id);
+    if (wc && wc !== NO_WALL) {
+      c.walls = setCell(c.walls, y * c.w + x, NO_WALL);
+      c = tidy(c, catalog);
+      continue;
     }
+    const o = objectAt(c, x, y, catalog);
+    if (o) {
+      c = deleteObject(c, o.id, catalog);
+      continue;
+    }
+    const world = compileWorld(c, catalog);
+    const onTile = (px: number, py: number, w: number, d: number) => x + 0.5 > px && x + 0.5 < px + w && y + 0.5 > py && y + 0.5 < py + d;
+    const desk = [...world.deskItems].reverse().find((i) => onTile(i.x, i.y, i.w, i.d));
+    if (desk) {
+      c = deleteObject(c, desk.obj.id, catalog);
+      continue;
+    }
+    const art = [...world.floorArt].reverse().find((a) => x >= a.x && y >= a.y && x < a.x + a.w && y < a.y + a.d);
+    if (art) c = deleteObject(c, art.obj.id, catalog);
   }
   return c;
 }
@@ -89,6 +127,7 @@ export function newId(l: Layout, kind: string): string {
   }
 }
 
+/** Places something that stands on the floor, or floor art. Desk items and wall decor have their own functions. */
 export function placeObject(l: Layout, kind: string, x: number, y: number, rot: number, catalog: Catalog = currentCatalog()): Edit & { id?: string } {
   const why = whyNotFit(l, kind, x, y, rot, undefined, catalog);
   if (why) return fail(why);
@@ -98,6 +137,133 @@ export function placeObject(l: Layout, kind: string, x: number, y: number, rot: 
   return { ok: true, layout: c, id };
 }
 
+const snap05 = (n: number) => Math.round(n * 20) / 20;
+
+/** The floor object at a world point that desk items can stand on (an original desk, or an item in group Desks), if any. */
+export function hostAt(l: Layout, wx: number, wy: number, catalog: Catalog = currentCatalog()): PlacedObject | undefined {
+  for (let i = l.objects.length - 1; i >= 0; i--) {
+    const o = l.objects[i];
+    const item = catalog.get(o.kind);
+    if (!item || item.kind !== 'floor' || item.surface === undefined) continue;
+    const [w, d] = rotFootprint(item.footprint, o.rot);
+    if (wx >= o.x && wx < o.x + w && wy >= o.y && wy < o.y + d) return o;
+  }
+  return undefined;
+}
+
+/** Where on `host` an item whose centre is at the world point goes, as `at` in the host's frame and the item's turn relative to the host. */
+function deskPose(host: PlacedObject, itemFootprint: readonly [number, number], wx: number, wy: number, worldRot: number, catalog: Catalog) {
+  const [hw, hd] = catalog.get(host.kind)!.footprint;
+  const rel = (((worldRot - host.rot) % 4) + 4) % 4 as Rot;
+  const [iw, id] = rotFootprint(itemFootprint, rel);
+  const [lx, ly] = unturnPoint(wx - host.x, wy - host.y, hw, hd, host.rot);
+  const at: [number, number] = [
+    snap05(Math.min(Math.max(lx - iw / 2, 0), Math.max(0, hw - iw))),
+    snap05(Math.min(Math.max(ly - id / 2, 0), Math.max(0, hd - id))),
+  ];
+  return { at, rel, tile: deskTileOf(hw, hd, at, iw, id) };
+}
+
+const deskCount = (l: Layout, hostId: string, tile: [number, number], except: string | undefined, catalog: Catalog) =>
+  l.objects.filter((o) => {
+    if (o.id === except || o.on !== hostId || !o.at) return false;
+    const item = catalog.get(o.kind), host = l.objects.find((h) => h.id === hostId);
+    if (!item || !host) return false;
+    const [hw, hd] = catalog.get(host.kind)!.footprint;
+    const [iw, id] = rotFootprint(item.footprint, o.rot);
+    const t = deskTileOf(hw, hd, o.at, iw, id);
+    return t[0] === tile[0] && t[1] === tile[1];
+  }).length;
+
+/** Puts a desk item with its centre at the world point (tiles, fractions allowed), turned `rot` in the world. */
+export function placeDeskItem(l: Layout, kind: string, wx: number, wy: number, rot: number, catalog: Catalog = currentCatalog()): Edit & { id?: string } {
+  const item = catalog.get(kind);
+  if (!item || item.kind !== 'deskitem') return fail('That isn’t a desk item.');
+  const host = hostAt(l, wx, wy, catalog);
+  if (!host) return fail('Desk items go on a desk.');
+  const { at, rel, tile } = deskPose(host, item.footprint, wx, wy, rot, catalog);
+  if (deskCount(l, host.id, tile, undefined, catalog) >= MAX_ON_DESK_TILE) return fail('That desk tile is full.');
+  const c = cloneLayout(l);
+  const id = newId(c, kind);
+  c.objects.push({ id, kind, x: 0, y: 0, rot: rel, on: host.id, at });
+  return { ok: true, layout: c, id };
+}
+
+/** Moves a desk item to the world point (it may go to another desk), keeping the way it faces in the world. */
+export function moveDeskItem(l: Layout, id: string, wx: number, wy: number, catalog: Catalog = currentCatalog()): Edit {
+  const o = l.objects.find((q) => q.id === id);
+  const item = o && catalog.get(o.kind);
+  if (!o || !item || item.kind !== 'deskitem') return fail('That isn’t there any more.');
+  const oldHost = o.on ? l.objects.find((q) => q.id === o.on) : undefined;
+  const worldRot = ((oldHost?.rot ?? 0) + o.rot) & 3;
+  const host = hostAt(l, wx, wy, catalog);
+  if (!host) return fail('Desk items go on a desk.');
+  const { at, rel, tile } = deskPose(host, item.footprint, wx, wy, worldRot, catalog);
+  if (deskCount(l, host.id, tile, id, catalog) >= MAX_ON_DESK_TILE) return fail('That desk tile is full.');
+  const c = cloneLayout(l);
+  Object.assign(c.objects.find((q) => q.id === id)!, { on: host.id, at, rot: rel });
+  return { ok: true, layout: c };
+}
+
+/** Which face of the wall tile (tx, ty), with the pointer at (fx, fy) within it from 0 to 1, a piece of wall decor would hang on; null if the tile has no free face. */
+export function wallFaceAt(l: Layout, tx: number, ty: number, fx: number, fy: number): Face | null {
+  if (!inside(l, tx, ty) || l.walls[ty * l.w + tx] === NO_WALL) return null;
+  const open = (f: Face) => {
+    const [dx, dy] = FACE_STEP[f];
+    const nx = tx + dx, ny = ty + dy;
+    return inside(l, nx, ny) && l.walls[ny * l.w + nx] === NO_WALL;
+  };
+  const dist: Record<Face, number> = { n: fy, s: 1 - fy, w: fx, e: 1 - fx };
+  const faces = (['n', 's', 'w', 'e'] as Face[]).filter(open).sort((a, b) => dist[a] - dist[b]);
+  return faces[0] ?? null;
+}
+
+const faceCount = (l: Layout, tx: number, ty: number, face: Face, except?: string) =>
+  l.objects.filter((o) => o.id !== except && o.wall === face && o.x === tx && o.y === ty).length;
+
+/** Hangs wall decor on a face of the wall tile (tx, ty). */
+export function placeWallDecor(l: Layout, kind: string, tx: number, ty: number, face: Face | null, catalog: Catalog = currentCatalog()): Edit & { id?: string } {
+  const item = catalog.get(kind);
+  if (!item || item.kind !== 'wall') return fail('That isn’t wall decor.');
+  if (!face) return fail('Hang this on a wall.');
+  const [dx, dy] = FACE_STEP[face];
+  if (!inside(l, tx, ty) || l.walls[ty * l.w + tx] === NO_WALL || !inside(l, tx + dx, ty + dy) || l.walls[(ty + dy) * l.w + tx + dx] !== NO_WALL) return fail('Hang this on a wall.');
+  if (faceCount(l, tx, ty, face) >= MAX_ON_WALL_FACE) return fail('That wall is full.');
+  const c = cloneLayout(l);
+  const id = newId(c, kind);
+  c.objects.push({ id, kind, x: tx, y: ty, rot: 0, wall: face });
+  return { ok: true, layout: c, id };
+}
+
+/** Moves wall decor to a face of another (or the same) wall tile. */
+export function moveWallDecor(l: Layout, id: string, tx: number, ty: number, face: Face | null, catalog: Catalog = currentCatalog()): Edit {
+  const o = l.objects.find((q) => q.id === id);
+  if (!o || catalog.get(o.kind)?.kind !== 'wall') return fail('That isn’t there any more.');
+  if (!face) return fail('Hang this on a wall.');
+  const [dx, dy] = FACE_STEP[face];
+  if (!inside(l, tx, ty) || l.walls[ty * l.w + tx] === NO_WALL || !inside(l, tx + dx, ty + dy) || l.walls[(ty + dy) * l.w + tx + dx] !== NO_WALL) return fail('Hang this on a wall.');
+  if (faceCount(l, tx, ty, face, id) >= MAX_ON_WALL_FACE) return fail('That wall is full.');
+  const c = cloneLayout(l);
+  Object.assign(c.objects.find((q) => q.id === id)!, { x: tx, y: ty, wall: face });
+  return { ok: true, layout: c };
+}
+
+/** What a click at a world point (tiles) picks: desk items first, then wall decor, then what stands on the floor, then floor art. */
+export function hitTest(l: Layout, wx: number, wy: number, catalog: Catalog = currentCatalog()): PlacedObject | undefined {
+  const world = compileWorld(l, catalog);
+  const desk = [...world.deskItems].reverse().find((i) => wx >= i.x && wx < i.x + i.w && wy >= i.y && wy < i.y + i.d);
+  if (desk) return desk.obj;
+  const tx = Math.floor(wx), ty = Math.floor(wy);
+  const face = wallFaceAt(l, tx, ty, wx - tx, wy - ty);
+  const decor = world.wallDecor.filter((d) => d.x === tx && d.y === ty);
+  if (decor.length) return (decor.find((d) => d.face === face) ?? decor[decor.length - 1]).obj;
+  const floor = objectAt(l, tx, ty, catalog);
+  if (floor) return floor;
+  const art = [...world.floorArt].reverse().find((a) => tx >= a.x && ty >= a.y && tx < a.x + a.w && ty < a.y + a.d);
+  return art?.obj;
+}
+
+/** Moves something that stands on the floor, or floor art, so its top-left corner is at (x, y). */
 export function moveObject(l: Layout, id: string, x: number, y: number, catalog: Catalog = currentCatalog()): Edit {
   const o = l.objects.find((q) => q.id === id);
   if (!o) return fail('That isn’t there any more.');
@@ -107,13 +273,27 @@ export function moveObject(l: Layout, id: string, x: number, y: number, catalog:
   const m = c.objects.find((q) => q.id === id)!;
   m.x = x;
   m.y = y;
-  return { ok: true, layout: c };
+  return { ok: true, layout: tidy(c, catalog) }; // a desk takes its items with it, by id: nothing else to move
 }
 
 /** A quarter turn clockwise about the object's centre. */
 export function rotateObject(l: Layout, id: string, catalog: Catalog = currentCatalog()): Edit {
   const o = l.objects.find((q) => q.id === id);
   if (!o) return fail('That isn’t there any more.');
+  const kind = catalog.get(o.kind)?.kind;
+  if (kind === 'wall') return fail('Wall decor can’t be turned.');
+  if (kind === 'deskitem') {
+    // A quarter turn about its own centre, staying where it is on the desk.
+    const item = catalog.get(o.kind)!;
+    const host = o.on ? l.objects.find((q) => q.id === o.on) : undefined;
+    if (!host || !o.at) return fail('That isn’t on a desk.');
+    const [iw, id2] = rotFootprint(item.footprint, o.rot);
+    const rot2 = ((o.rot + 1) & 3) as Rot;
+    const [nw, nd] = rotFootprint(item.footprint, rot2);
+    const c = cloneLayout(l);
+    Object.assign(c.objects.find((q) => q.id === id)!, { rot: rot2, at: [snap05(o.at[0] + iw / 2 - nw / 2), snap05(o.at[1] + id2 / 2 - nd / 2)] });
+    return { ok: true, layout: tidy(c, catalog) };
+  }
   const fp = catalog.get(o.kind)?.footprint ?? [1, 1];
   const [w, d] = rotFootprint(fp, o.rot);
   const rot = ((o.rot + 1) & 3) as Rot;
@@ -123,13 +303,14 @@ export function rotateObject(l: Layout, id: string, catalog: Catalog = currentCa
   if (whyNotFit(l, o.kind, x, y, rot, id, catalog)) return fail('Not enough room to turn this here.');
   const c = cloneLayout(l);
   Object.assign(c.objects.find((q) => q.id === id)!, { x, y, rot });
-  return { ok: true, layout: c };
+  return { ok: true, layout: tidy(c, catalog) };
 }
 
-export function deleteObject(l: Layout, id: string): Layout {
+/** Removes an object. A desk takes the things on it with it. */
+export function deleteObject(l: Layout, id: string, catalog: Catalog = currentCatalog()): Layout {
   const c = cloneLayout(l);
   c.objects = c.objects.filter((o) => o.id !== id);
-  return c;
+  return tidy(c, catalog);
 }
 
 export function setSpawn(l: Layout, x: number, y: number, catalog: Catalog = currentCatalog()): Edit {
@@ -157,7 +338,9 @@ export function resize(l: Layout, w: number, h: number, catalog: Catalog = curre
   }
   const c: Layout = { ...cloneLayout(l), w, h, floor, walls };
   c.objects = c.objects.filter((o) => {
-    const fits = coverOf(o, catalog).every(([x, y]) => x < w && y < h);
+    const kind = catalog.get(o.kind)?.kind;
+    const tiles = kind === 'floorart' ? artTiles(o, catalog) : kind === 'wall' ? [[o.x, o.y] as Tile] : coverOf(o, catalog);
+    const fits = tiles.every(([x, y]) => x < w && y < h);
     if (!fits) cut.push(`${catalog.get(o.kind)?.name ?? o.kind} at ${o.x},${o.y}`);
     return fits;
   });

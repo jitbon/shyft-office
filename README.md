@@ -84,12 +84,38 @@ Any member can rearrange the office. Press **B** (or the **Build** button) to op
   cannot be reached.
 - **Custom** adds your own furniture and objects from a sheet you draw: see [`objects/FORMAT.md`](objects/FORMAT.md)
   (`npm run objects:template`, `npm run objects:check`). In first person they are solid boxes.
+- The **Items** tab holds about a hundred ready-made items in nine groups (desks, chairs, computers and desk items, shelves,
+  decorations, wall decor, floor art, odds and ends, and seasonal ones), with a season filter and a search box. Desk items
+  stand on a desk, wall decor hangs on a wall, floor art lies flat and can be walked on: see [Furnishing the office](#furnishing-the-office).
 - Guests (people without a saved member id) cannot build. An admin can switch building off for everyone else in the
   Admin panel.
 
 The published office is saved in `data/layout.json` (the current version and the nine before it), each member's draft
-in `data/drafts/`, and custom objects in `data/objects/`. `tools/e2e/cdp.mjs` is a small Chrome driver that was used to
+in `data/drafts/`, custom objects in `data/objects/`, and items made in the studio in `data/items/` (drafts in `data/studio/`). `tools/e2e/cdp.mjs` is a small Chrome driver that was used to
 check all of this in a real browser.
+
+## Furnishing the office
+
+- **Where things go.** Pick an item in the **Items** tab and click: floor items take tiles, **desk items** (a lamp, a mug) stand
+  on whatever desk is under the pointer, **wall decor** (a poster, a clock) hangs on the wall face nearest the pointer, and
+  **floor art** (a rug, a mat) is laid flat, can overlap and can be walked on. **R** turns the item before you place it or after
+  you select it. Moving a desk takes its items with it; deleting a desk or a wall piece takes what is on it.
+- **The studio.** **New item** opens a window with a parts list, a first-person preview you can turn, a top-down preview, and the
+  properties. Build an item from boxes, planks, posts, sheets and slabs (up to 24 parts, in steps of 0.05 of a tile), name it,
+  pick its group and where it goes, and **Save**. It appears in the catalog for everyone with your name on it. Anyone can open an
+  item and **Save as copy**; only its maker or an admin can change or delete it. A half-made design is kept on the server and is
+  back when you open the studio again. The file format, and a checker you can run outside the app, are in
+  [`items/FORMAT.md`](items/FORMAT.md) (`npm run items:template`, `npm run items:check`).
+- **Changing an item that is placed.** Copies that still fit take the new look at once; a copy that can no longer fit where it
+  stands keeps the old one, and the studio tells you how many.
+- **The AI helper (optional).** The studio can ask an AI service for a first draft from a few words or a picture. It is off
+  unless an admin sets it up and switches it on. Set `ITEM_AI_KEY` (the key for the service) and restart the server; optional
+  `ITEM_AI_MODEL` (default `claude-sonnet-5-5`), `ITEM_AI_URL` (a different base address; the default is the public Anthropic API)
+  and `ITEM_AI_TIMEOUT_MS` (default 60000). Then an admin turns on **Item helper** in the Admin panel. Without a key the switch is
+  disabled and the helper box in the studio says it isn't set up. **What is sent where:** what a builder types, and a picture if
+  they choose one, goes from their browser to this server and from this server to the service. The key never leaves the server.
+  The office does not log or keep the request or the reply; a draft is only saved if the builder presses Save, after checking and
+  changing it, and every draft is clamped and validated before the builder sees it.
 
 ## Admin
 
@@ -113,6 +139,7 @@ builder it moved to version 3: claims are kept, now named after the desk they be
 |---|---|
 | `PORT` | Server port (default 3001) |
 | `ADMIN_TOKEN` | Enables the admin role for `?admin=<token>` |
+| `ITEM_AI_KEY`, `ITEM_AI_MODEL`, `ITEM_AI_URL`, `ITEM_AI_TIMEOUT_MS` | Optional: the service behind the studio's item helper (see Furnishing the office). Without a key there is no helper |
 | `TURN_URL`, `TURN_USER`, `TURN_PASS` | Optional TURN relay for people behind strict firewalls. Calls go directly between browsers over public STUN otherwise |
 
 Rooms and desk pods are set up in build mode (see above); the office that ships with the app is `shared/default-layout.ts`. A room's size limit and
@@ -123,19 +150,21 @@ Rooms and desk pods are set up in build mode (see above); the office that ships 
 - `shared/layout.ts`, `shared/catalog.ts`, `shared/world.ts`: the office as data (a layout of floors, walls, placed
   furniture, rooms and pods), the furniture it can hold, and the compiler that turns a layout into the tile grid, areas and
   desks. `shared/map.ts` exposes the current compiled office; both views, the server and collision all read it.
-  `layout-check.ts` and `layout-merge.ts` find what is wrong with a layout and merge two edits; `objects.ts` is the custom object format.
+  `layout-check.ts` and `layout-merge.ts` find what is wrong with a layout and merge two edits; `objects.ts` is the custom object format. `items.ts` is the item (parts) format, `readymade.ts` the ready-made list, `items-edit.ts` what happens to placed copies when an item changes.
 - `shared/proximity.ts`: who is linked to whom (distance, walls, private areas, desks, status). Pure functions.
 - `shared/protocol.ts`: WebSocket message types. `shared/sprites.ts`, `shared/status.ts`: the sprite-sheet format and
   status rules, shared by the server, the browser and the command-line tools.
 - `server/app.ts`: the server. It decides who can see, hear and message whom; browsers only play the calls.
   `links.ts` (link engine), `office.ts` (rooms, desks, knocks), `store.ts` (saved state), `sprites.ts` (sheets),
-  `api.ts` (the builder's HTTP API), `layout-store.ts` (published layouts and drafts), `objects.ts` (custom objects).
+  `api.ts` (the builder's HTTP API), `layout-store.ts` (published layouts and drafts), `objects.ts` (custom objects),
+  `items.ts` (studio items and their versions), `helper.ts` (the optional AI helper).
 - `src/media.ts`: calls, one direct WebRTC connection per linked person, with per-person volume.
 - `src/art.ts`, `src/palette.ts`: built-in pixel art, 32 pixels per tile and per character, is generated in code with one shared
   palette; custom characters come from sheets. `src/scale.ts` keeps zoom to whole device pixels so the art stays crisp.
 - `src/render2d.ts`, `src/render3d.ts`: the two views. They share one avatar interface. First person draws furniture as solid
   boxes (`src/mesh3d.ts`) into a per-pixel depth buffer, so furniture and people hide each other correctly.
-- `src/builder/`: build mode (draft, tools, undo, panel).
+- `src/builder/`: build mode (draft, tools, undo, panel). `src/studio/`: the furniture studio (model, previews, panel, helper).
+  `src/item2d.ts`, `src/pattern.ts`, `src/materials.ts`, `src/raster.ts`: how items are drawn in both views, from the same parts.
 - `src/main.ts`: input, game loop, networking glue. `office-ui.ts`, `status.ts`, `callPanel.ts`, `join.ts`: UI.
 - `tools/`: sprite and object templates and checkers, the example generator, the load-check bots, and `e2e/cdp.mjs`.
 

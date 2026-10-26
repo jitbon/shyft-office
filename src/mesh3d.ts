@@ -2,7 +2,8 @@
 // renderer can draw. Pure maths (no canvas), so it can be tested. Map units are tiles; x and y are on the floor
 // (y grows south), z is height above it, and a wall is one tile tall.
 import type { Box } from '../shared/catalog';
-import type { World, WorldObject } from '../shared/world';
+import { turnPoint } from '../shared/layout';
+import type { WallDecorPiece, World, WorldObject } from '../shared/world';
 
 export interface V3 {
   x: number;
@@ -28,19 +29,14 @@ export interface ObjectMesh {
   cx: number;
   cy: number;
   faces: Face[];
+  /** Small decoration: not worth drawing as far away as furniture. */
+  minor?: boolean;
 }
 
 type Rot = 0 | 1 | 2 | 3;
 
 /** Local frame (footprint fw×fd, facing south) to the map after `rot` clockwise quarter turns. */
-function turn(lx: number, ly: number, fw: number, fd: number, rot: Rot): [number, number] {
-  switch (rot) {
-    case 1: return [fd - ly, lx];
-    case 2: return [fw - lx, fd - ly];
-    case 3: return [ly, fw - lx];
-    default: return [lx, ly];
-  }
-}
+export const turn = (lx: number, ly: number, fw: number, fd: number, rot: Rot): [number, number] => turnPoint(lx, ly, fw, fd, rot);
 
 const repeatOf = (extent: number) => Math.max(1, Math.round(extent));
 
@@ -82,18 +78,49 @@ function boxFaces(b: Box, fw: number, fd: number, rot: Rot, ox: number, oy: numb
   ];
 }
 
-/** The solid shape of one placed object, turned to face as it does on the map. */
-export function objectMesh(o: WorldObject): ObjectMesh {
-  const [fw, fd] = o.item.footprint;
-  const rot = o.obj.rot;
+/** Boxes of `item` turned `rot`, with its footprint's top-left corner at (x, y) and its base `lift` above the floor. */
+export function itemFaces(item: { footprint: readonly [number, number]; model: Box[] }, rot: Rot, x: number, y: number, lift: number): Face[] {
+  const [fw, fd] = item.footprint;
   const faces: Face[] = [];
-  for (const b of o.item.model) faces.push(...boxFaces(b, fw, fd, rot, o.x, o.y));
-  return { id: o.obj.id, cx: o.x + o.w / 2, cy: o.y + o.d / 2, faces };
+  for (const b of item.model) faces.push(...boxFaces(lift ? { ...b, z: b.z + lift } : b, fw, fd, rot, x, y));
+  return faces;
 }
 
-/** Every object with a shape. Built once per world, not every frame. */
+/** The solid shape of one placed object, turned to face as it does on the map. */
+export function objectMesh(o: WorldObject): ObjectMesh {
+  return { id: o.obj.id, cx: o.x + o.w / 2, cy: o.y + o.d / 2, faces: itemFaces(o.item, o.obj.rot, o.x, o.y, 0) };
+}
+
+/** How far decor stands out from the wall it hangs on, in tiles (so it is never inside the wall's own face). */
+const WALL_GAP = 0.02;
+
+/** The shape of wall decor: against the face of its wall tile, turned to face out of the room. */
+export function wallDecorMesh(d: WallDecorPiece): ObjectMesh {
+  const [fw, fd] = d.item.footprint;
+  const hang = d.item.hang ?? 0.35;
+  // South faces south (not turned), west faces west (one turn), north (two), east (three).
+  const rot = ({ s: 0, w: 1, n: 2, e: 3 } as const)[d.face];
+  let x = 0, y = 0;
+  if (d.face === 's') [x, y] = [d.x + 0.5 - fw / 2, d.y + 1 + WALL_GAP];
+  else if (d.face === 'n') [x, y] = [d.x + 0.5 - fw / 2, d.y - WALL_GAP - fd];
+  else if (d.face === 'e') [x, y] = [d.x + 1 + WALL_GAP, d.y + 0.5 - fw / 2];
+  else [x, y] = [d.x - WALL_GAP - fd, d.y + 0.5 - fw / 2];
+  return { id: d.obj.id, cx: d.x + 0.5, cy: d.y + 0.5, faces: itemFaces(d.item, rot, x, y, hang), minor: fw <= 0.5 };
+}
+
+/**
+ * Every object with a shape. A desk and the things on it are one mesh, so one distance test culls them together.
+ * Floor art has no shape: it is part of the floor. Built once per world, not every frame.
+ */
 export function worldMeshes(world: World): ObjectMesh[] {
-  return world.objects.filter((o) => o.item.model.length).map(objectMesh);
+  const meshes = world.objects.filter((o) => o.item.model.length).map(objectMesh);
+  const byHost = new Map(meshes.map((m) => [m.id, m]));
+  for (const d of world.deskItems) {
+    const host = byHost.get(d.host.obj.id);
+    if (host) host.faces.push(...itemFaces(d.item, d.rot, d.x, d.y, d.z));
+  }
+  for (const d of world.wallDecor) meshes.push(wallDecorMesh(d));
+  return meshes;
 }
 
 /** Faces that point toward the eye; the others are on the far side and never seen. */

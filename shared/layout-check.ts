@@ -1,7 +1,7 @@
 // Finds what is wrong with a layout before it is published. Pure: the builder runs it on every edit and
 // the server runs it again before accepting a publish, so neither has to trust the other.
 import { currentCatalog, type Catalog } from './catalog';
-import { MAX_OBJECTS, type Layout, type Rect } from './layout';
+import { MAX_OBJECTS, normalizeLayout, type Layout, type Rect } from './layout';
 import { compileWorld, type World } from './world';
 
 export type ProblemCode =
@@ -15,6 +15,8 @@ export type ProblemCode =
   | 'object-overlap'
   | 'bad-name'
   | 'bad-merge'
+  | 'item-orphan'
+  | 'item-limit'
   | 'too-many-objects';
 
 export interface Problem {
@@ -114,6 +116,18 @@ export function checkLayout(layout: Layout, catalog: Catalog = currentCatalog(),
       const tiles = overlapTiles(a.rects, room.rects);
       if (tiles.length) problems.push({ code: 'pod-in-private-room', message: `${a.name} overlaps the private room ${room.name}.`, tiles });
     }
+  }
+
+  // Desk items and wall decor: attached to something that is gone, or too many in one place. After `normalizeLayout`
+  // neither is left, so these only show for a draft loaded from an older file.
+  for (const r of normalizeLayout(layout, catalog).removed) {
+    if (r.why === 'unknown') continue;
+    const o = layout.objects.find((q) => q.id === r.id)!;
+    const host = o.on ? layout.objects.find((q) => q.id === o.on) : undefined;
+    const tiles: [number, number][] = o.wall ? [[o.x, o.y]] : host ? [[host.x, host.y]] : [];
+    problems.push(r.why === 'full'
+      ? { code: 'item-limit', message: o.wall ? 'There are too many things on that wall.' : 'There are too many things on that desk tile.', tiles }
+      : { code: 'item-orphan', message: o.wall ? 'Wall decor is hanging where there is no wall.' : 'A desk item has no desk to stand on.', tiles });
   }
 
   // Reachability from the spawn: every room, and every chair at a desk.

@@ -1,6 +1,8 @@
 // The builder's side panel: the catalog, the tools, undo, problems, merge clashes and history. It only draws what the
 // controller tells it and calls back what the person clicked; the edits themselves live in tools.ts.
-import { PREFABS, currentCatalog } from '../../shared/catalog';
+import { GROUPS, PREFABS, catalogItems, currentCatalog, filterCatalog, type CatalogItem } from '../../shared/catalog';
+import type { Group, Season } from '../../shared/items';
+import { flatPicture, itemPicture } from '../item2d';
 import { FLOOR_CODES } from '../../shared/layout';
 import { describeObjectError, type CustomObject } from '../../shared/objects';
 import { viewCanvas } from '../custom-objects';
@@ -31,7 +33,7 @@ export interface PanelState {
   uploadErrors: string[];
   /** Painting tiles into the chosen room or pod, or taking them out. */
   regionMode: 'paint' | 'unpaint';
-  selected: { id: string; name: string } | null;
+  selected: { id: string; name: string; kind: string } | null;
   canUndo: boolean;
   canRedo: boolean;
   /** "Saved" / "Saving…" / why saving failed. */
@@ -64,6 +66,8 @@ export interface PanelApi {
   pickFloor(code: string): void;
   pickWall(code: string): void;
   pickItem(kind: string): void;
+  /** Opens the studio: with no argument on a new design, with a catalog id on that item (as a copy unless it is the member's own). */
+  openStudio(kind?: string): void;
   undo(): void;
   redo(): void;
   turn(): void;
@@ -113,6 +117,41 @@ function swatch(kind: 'floor' | 'wall' | 'item', code: string, title: string, on
   return b;
 }
 
+/** A picture button for any item: the derived picture for made items, the built-in swatch for the six, the top view for sheet objects. */
+function itemButton(item: CatalogItem, on: boolean, onClick: () => void, showGroup = false): HTMLButtonElement {
+  if (!item.id.startsWith('item:') && !item.custom) {
+    const sw = swatch('item', item.id, item.name, on, onClick);
+    sw.append(itemCredit(item, showGroup));
+    return sw;
+  }
+  const canvas = item.custom
+    ? viewCanvas(item.id.slice('custom:'.length), 'top', 0)
+    : item.kind === 'floorart' ? flatPicture(item, 0) : itemPicture(item, 0).canvas;
+  const b = button('', onClick, { title: `${item.name} · by ${item.by}`, className: 'pick' + (on ? ' on' : '') });
+  b.setAttribute('aria-label', item.name);
+  b.setAttribute('aria-pressed', String(on));
+  if (canvas) {
+    const c = makeCanvas(canvas.width, canvas.height)[0];
+    c.getContext('2d')!.drawImage(canvas, 0, 0);
+    c.style.width = `${Math.min(Math.max(item.footprint[0], 0.75), 2) * 44}px`;
+    c.style.maxHeight = '56px';
+    c.style.objectFit = 'contain';
+    b.append(c);
+  }
+  b.append(Object.assign(document.createElement('span'), { textContent: item.name }), itemCredit(item, showGroup));
+  return b;
+}
+
+/** A small line under an item's name: who made it, and its group when the list mixes groups. */
+function itemCredit(item: CatalogItem, showGroup: boolean): HTMLElement {
+  const group = showGroup ? GROUPS.find((g) => g.id === item.group)?.name : undefined;
+  return Object.assign(document.createElement('small'), { className: 'credit', textContent: group ? `${item.by} · ${group}` : item.by });
+}
+
+const SEASON_NAMES: [Season | '', string][] = [['', 'All seasons'], ['winter', 'Winter'], ['spring', 'Spring'], ['summer', 'Summer'], ['autumn', 'Autumn']];
+/** How many items the picture grid shows before it scrolls. */
+const SHOWN = 24;
+
 const ago = (at: number) => {
   const s = Math.max(0, Math.round((Date.now() - at) / 1000));
   if (s < 60) return 'just now';
@@ -125,8 +164,56 @@ export class BuilderPanel {
   /** What was typed in the upload form, kept while the panel is redrawn. */
   private form = { name: '', w: 1, d: 1, height: 64, blocks: true, frames: 1, fps: 4, back: false };
   private file: File | null = null;
+  /** The Items tab's filters, kept while the panel is redrawn. */
+  private filter: { group: Group | ''; season: Season | ''; text: string } = { group: '', season: '', text: '' };
 
   constructor(private root: HTMLElement, private api: PanelApi) {}
+
+  /** The Items tab: group bar, season filter, search and a grid of pictures with a count and the picked item's creator. */
+  private renderItems(root: HTMLElement, s: PanelState) {
+    const a = this.api;
+    const f = this.filter;
+    const all = catalogItems(currentCatalog());
+    const bar = document.createElement('div');
+    bar.className = 'groups';
+    const draw = () => {
+      for (const b of bar.querySelectorAll('button')) b.classList.toggle('on', (b as HTMLElement).dataset.group === f.group);
+      list.replaceChildren();
+      const shown = filterCatalog(all, { group: f.group || undefined, season: f.season || undefined, text: f.text });
+      for (const item of shown) list.append(itemButton(item, s.tool === 'place' && s.brush.kind === item.id, () => a.pickItem(item.id), !f.group));
+      if (!shown.length) list.append(Object.assign(document.createElement('div'), { className: 'bnote', textContent: 'Nothing matches.' }));
+      count.textContent = `${shown.length} ${shown.length === 1 ? 'item' : 'items'}`;
+      const picked = currentCatalog().get(s.brush.kind);
+      who.textContent = picked && s.tool === 'place' ? `${picked.name} · by ${picked.by}` : '';
+    };
+    for (const [id, name] of [['', 'All'], ...GROUPS.map((g) => [g.id, g.name] as const)] as const) {
+      const b = button(name, () => { f.group = id as Group | ''; draw(); }, { className: f.group === id ? 'on' : '' });
+      b.dataset.group = id;
+      bar.append(b);
+    }
+    const season = document.createElement('select');
+    season.setAttribute('aria-label', 'Season');
+    for (const [id, name] of SEASON_NAMES) season.append(Object.assign(document.createElement('option'), { value: id, textContent: name, selected: f.season === id }));
+    season.onchange = () => { f.season = season.value as Season | ''; draw(); };
+    const make = button('New item', () => a.openStudio(), { className: 'primary', title: 'Design your own furniture' });
+    const search = Object.assign(document.createElement('input'), { type: 'search', placeholder: 'Search items', value: f.text });
+    search.setAttribute('aria-label', 'Search items');
+    search.oninput = () => { f.text = search.value; draw(); };
+    const row = document.createElement('div');
+    row.className = 'filters';
+    row.append(season, search);
+    const list = document.createElement('div');
+    list.className = 'picks';
+    list.style.maxHeight = `${Math.ceil(SHOWN / 3) * 78}px`;
+    list.style.overflowY = 'auto';
+    const count = document.createElement('div');
+    count.className = 'bnote';
+    const who = document.createElement('div');
+    who.className = 'bnote';
+    const edit = button('Edit', () => a.openStudio(s.brush.kind), { title: 'Open this item in the studio', hidden: !(s.tool === 'place' && currentCatalog().get(s.brush.kind)) });
+    root.append(make, bar, row, list, count, who, edit);
+    draw();
+  }
 
   render(s: PanelState) {
     const a = this.api;
@@ -148,7 +235,7 @@ export class BuilderPanel {
 
     const tabs = document.createElement('div');
     tabs.className = 'tabs';
-    for (const [id, label] of [['floors', 'Floors'], ['walls', 'Walls'], ['furniture', 'Furniture'], ['rooms', 'Rooms'], ['custom', 'Custom'], ['history', 'History']] as const) {
+    for (const [id, label] of [['floors', 'Floors'], ['walls', 'Walls'], ['furniture', 'Items'], ['rooms', 'Rooms'], ['custom', 'Custom'], ['history', 'History']] as const) {
       tabs.append(button(label, () => a.setTab(id), { className: s.tab === id ? 'on' : '' }));
     }
     sections.push(tabs);
@@ -160,9 +247,8 @@ export class BuilderPanel {
     } else if (s.tab === 'walls') {
       for (const [code, name] of WALL_NAMES) grid.append(swatch('wall', code, name, s.tool === 'wall' && s.brush.wall === code, () => a.pickWall(code)));
     } else if (s.tab === 'furniture') {
-      for (const item of currentCatalog().values()) {
-        if (!item.custom) grid.append(swatch('item', item.id, item.name, s.tool === 'place' && s.brush.kind === item.id, () => a.pickItem(item.id)));
-      }
+      grid.className = 'items';
+      this.renderItems(grid, s);
     } else if (s.tab === 'rooms') {
       grid.className = 'rooms';
       this.renderRooms(grid, s);
@@ -201,6 +287,7 @@ export class BuilderPanel {
       sel.append(
         Object.assign(document.createElement('span'), { textContent: s.selected.name }),
         button('Turn (R)', a.turn),
+        button('Edit item', () => a.openStudio(s.selected!.kind), { title: 'Change this item, or make your own copy of it, in the studio' }),
         button('Delete', a.remove),
       );
       sections.push(sel);

@@ -115,3 +115,35 @@ describe('rooms inside bigger areas', () => {
     expect(codes(withRoom(emptyLayout(), { id: 'new', name: 'New room', rects: [] }))).toEqual([]);
   });
 });
+
+import { afterEach, beforeEach } from 'vitest';
+import { itemDef, withItems } from './fixtures/items';
+
+describe('items that are not furniture', () => {
+  let restore: () => void;
+  beforeEach(() => {
+    restore = withItems([
+      { id: 'rug', def: itemDef('floorart') },
+      { id: 'lamp', def: itemDef('deskitem') },
+      { id: 'poster', def: itemDef('wall') },
+    ]);
+  });
+  afterEach(() => restore());
+
+  it('does not call floor art under a chair, a lamp on a desk or a poster on a wall an overlap', () => {
+    let l = smallOffice();
+    l = withObject(l, { id: 'rug-1', kind: 'item:rug', x: 9, y: 4, rot: 0 }); // under chair-a and desk-a
+    l = withObject(l, { id: 'lamp-1', kind: 'item:lamp', x: 0, y: 0, rot: 0, on: 'desk-a', at: [1, 0.25] });
+    l = withObject(l, { id: 'poster-1', kind: 'item:poster', x: 4, y: 0, rot: 0, wall: 's' });
+    expect(checkLayout(l)).toEqual([]);
+  });
+
+  it('reports a desk item with no desk, and wall decor with no wall, for a draft loaded from an older file', () => {
+    let l = withObject(smallOffice(), { id: 'lamp-1', kind: 'item:lamp', x: 0, y: 0, rot: 0, on: 'gone', at: [0, 0] });
+    l = withObject(l, { id: 'poster-1', kind: 'item:poster', x: 6, y: 6, rot: 0, wall: 's' });
+    const codes = checkLayout(l).map((p) => p.code);
+    expect(codes).toEqual(['item-orphan', 'item-orphan']);
+    const full = Array.from({ length: 7 }, (_, i) => ({ id: `l${i}`, kind: 'item:lamp', x: 0, y: 0, rot: 0 as const, on: 'desk-a', at: [0.1, 0.25] as [number, number] }));
+    expect(checkLayout(full.reduce((acc, o) => withObject(acc, o), smallOffice())).map((p) => p.code)).toEqual(['item-limit']);
+  });
+});

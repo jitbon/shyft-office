@@ -88,3 +88,72 @@ describe('visibility and projection', () => {
     expect(clipNear(poly.map((p) => ({ ...p, ty: -2 })), 0.15)).toEqual([]);
   });
 });
+
+import { afterEach, beforeEach } from 'vitest';
+import { currentCatalog } from '../../shared/catalog';
+import { normalizeLayout } from '../../shared/layout';
+import { itemDef, part, withItems } from './fixtures/items';
+
+describe('desk items and wall decor in first person', () => {
+  let restore: () => void;
+  beforeEach(() => {
+    restore = withItems([
+      { id: 'lamp', def: itemDef('deskitem', { name: 'Lamp', footprint: [0.5, 0.5], parts: [part({ w: 0.25, d: 0.25, x: 0.125, y: 0.125, h: 0.3, pattern: 'metal' })] }) },
+      { id: 'poster', def: itemDef('wall', { name: 'Poster', footprint: [0.5, 0.25], hang: 0.4, parts: [part({ w: 0.5, d: 0.05, h: 0.4, pattern: 'paper' })] }) },
+    ]);
+  });
+  afterEach(() => restore());
+
+  const compile = (objs: Parameters<typeof withObject>[1][]) =>
+    compileWorld(normalizeLayout(objs.reduce((acc, o) => withObject(acc, o), emptyLayout()), currentCatalog()).layout, currentCatalog());
+  const lampOn = (rot: 0 | 1 | 2 | 3) => compile([{ id: 'd', kind: 'desk', x: 4, y: 4, rot }, { id: 'l', kind: 'item:lamp', x: 0, y: 0, rot: 0, on: 'd', at: [1, 0.25] }]);
+
+  it('stands a lamp on the desk top and groups it with the desk', () => {
+    const world = lampOn(0);
+    const meshes = worldMeshes(world);
+    expect(meshes.map((m) => m.id)).toEqual(['d']); // one mesh for the desk and the lamp
+    const lampFaces = meshes[0].faces.filter((f) => f.mat === 'm:metal:c0c0c0');
+    expect(lampFaces.length).toBe(5);
+    const bottoms = lampFaces.flatMap((f) => f.pts.map((p) => p.z));
+    expect(Math.min(...bottoms)).toBeCloseTo(0.31, 5);
+    expect(Math.max(...bottoms)).toBeCloseTo(0.61, 5);
+  });
+
+  it('turns the lamp with the desk', () => {
+    const where = (rot: 0 | 1 | 2 | 3) => {
+      const faces = worldMeshes(lampOn(rot))[0].faces.filter((f) => f.mat === 'm:metal:c0c0c0');
+      const xs = faces.flatMap((f) => f.pts.map((p) => p.x)), ys = faces.flatMap((f) => f.pts.map((p) => p.y));
+      return { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 };
+    };
+    // Lamp centre in the desk's frame: (1.25, 0.5). Upright: 4 + 1.25, 4 + 0.5. Half turn on a 3×1 desk: 4 + 3 - 1.25, 4 + 1 - 0.5.
+    expect(where(0)).toEqual({ x: 5.25, y: 4.5 });
+    expect(where(2).x).toBeCloseTo(5.75, 5);
+    expect(where(2).y).toBeCloseTo(4.5, 5);
+    const q = where(1);
+    expect(q.x).toBeCloseTo(4 + 1 - 0.5, 5);
+    expect(q.y).toBeCloseTo(4 + 1.25, 5);
+  });
+
+  it('hangs a poster against the face of its wall, facing out of the room, at its hang height', () => {
+    // The top wall (y = 0) faces south into the room; the bottom wall (y = 11) faces north; the left wall (x = 0) faces east; the right (x = 15) west.
+    const south = worldMeshes(compile([{ id: 'p', kind: 'item:poster', x: 5, y: 0, rot: 0, wall: 's' }]))[0];
+    const front = south.faces.find((f) => f.n.y === 1)!; // the face people see points south
+    expect(front.pts[0].y).toBeGreaterThan(1); // beyond the wall's south edge (y = 1)
+    expect(front.pts[0].y).toBeLessThan(1.3);
+    expect(Math.min(...south.faces.flatMap((f) => f.pts.map((p) => p.z)))).toBeCloseTo(0.4, 5);
+    expect(Math.max(...south.faces.flatMap((f) => f.pts.map((p) => p.z)))).toBeCloseTo(0.8, 5);
+    const north = worldMeshes(compile([{ id: 'p', kind: 'item:poster', x: 5, y: 11, rot: 0, wall: 'n' }]))[0];
+    expect(north.faces.find((f) => f.n.y === -1)!.pts[0].y).toBeLessThan(11);
+    const east = worldMeshes(compile([{ id: 'p', kind: 'item:poster', x: 0, y: 5, rot: 0, wall: 'e' }]))[0];
+    expect(east.faces.find((f) => f.n.x === 1)!.pts[0].x).toBeGreaterThan(1);
+    const west = worldMeshes(compile([{ id: 'p', kind: 'item:poster', x: 15, y: 5, rot: 0, wall: 'w' }]))[0];
+    expect(west.faces.find((f) => f.n.x === -1)!.pts[0].x).toBeLessThan(15);
+  });
+
+  it('draws nothing for floor art', () => {
+    const restoreArt = withItems([{ id: 'rug', def: itemDef('floorart') }]);
+    const w = compile([{ id: 'r', kind: 'item:rug', x: 4, y: 4, rot: 0 }]);
+    expect(worldMeshes(w)).toEqual([]);
+    restoreArt();
+  });
+});

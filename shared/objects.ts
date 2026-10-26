@@ -139,7 +139,10 @@ export function customCatalogItem(o: CustomObject): CatalogItem {
     mat: { top: m('top'), front: m('front'), side: m('side'), back: o.back ? m('back') : m('front'), east: m('side'), west: m('side!') },
     stretch: true,
   };
-  return { id: customKind(o.id), name: o.name, footprint: [fw, fd], blocks: o.blocks, tile: 'x', facing: true, model: [box], custom: true };
+  return {
+    id: customKind(o.id), name: o.name, footprint: [fw, fd], blocks: o.blocks, tile: 'x', facing: true, model: [box], custom: true,
+    group: 'odds', kind: 'floor', by: o.author ?? 'A member', version: 1,
+  };
 }
 
 const VIEW_NAMES = ['top', 'front', 'side', 'back'];

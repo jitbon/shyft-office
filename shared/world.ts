@@ -1,7 +1,7 @@
 // Turns a Layout into the lookup data every rule reads: the tile grid, areas, pods, desks and the spawn point.
 // Pure, so the server, both renderers and the tests all get the same world from the same layout.
-import { currentCatalog, type Catalog, type CatalogItem } from './catalog';
-import { NO_WALL, rotFootprint, type Layout, type PlacedObject, type Pod, type Rect, type Room } from './layout';
+import { currentCatalog, itemAt, type Catalog, type CatalogItem } from './catalog';
+import { NO_WALL, rotFootprint, turnPoint, type Face, type Layout, type PlacedObject, type Pod, type Rect, type Rot, type Room } from './layout';
 
 export type Area = Room;
 export type DeskPod = Pod;
@@ -28,6 +28,42 @@ export interface WorldObject {
   d: number;
 }
 
+/** A flat piece laid on the floor, under everything. */
+export interface FloorArtPiece {
+  obj: PlacedObject;
+  item: CatalogItem;
+  /** Top-left tile of the footprint after turning, and its size. */
+  x: number;
+  y: number;
+  w: number;
+  d: number;
+  rot: Rot;
+}
+
+/** A small item standing on a desk. `x`, `y` is the top-left corner of its footprint in the world, in tiles. */
+export interface DeskItemPiece {
+  obj: PlacedObject;
+  item: CatalogItem;
+  host: WorldObject;
+  x: number;
+  y: number;
+  w: number;
+  d: number;
+  /** The world facing: the host's turn plus the item's own. */
+  rot: Rot;
+  /** Height of the desk top it stands on. */
+  z: number;
+}
+
+/** Something hanging on one face of a wall tile. */
+export interface WallDecorPiece {
+  obj: PlacedObject;
+  item: CatalogItem;
+  x: number;
+  y: number;
+  face: Face;
+}
+
 export interface World {
   w: number;
   h: number;
@@ -42,7 +78,11 @@ export interface World {
   desks: Desk[];
   /** Tile centre. */
   spawn: { x: number; y: number };
+  /** The objects that stand on the floor and take tiles. Desk items, wall decor and floor art are listed apart. */
   objects: WorldObject[];
+  deskItems: DeskItemPiece[];
+  wallDecor: WallDecorPiece[];
+  floorArt: FloorArtPiece[];
   layout: Layout;
 }
 
@@ -57,11 +97,30 @@ export function compileWorld(layout: Layout, catalog: Catalog = currentCatalog()
   const inside = (x: number, y: number) => x >= 0 && y >= 0 && x < w && y < h;
 
   const objects: WorldObject[] = [];
+  const floorArt: FloorArtPiece[] = [];
+  const wallDecor: WallDecorPiece[] = [];
+  const attached: { obj: PlacedObject; item: CatalogItem }[] = [];
   for (const obj of layout.objects) {
-    const item = catalog.get(obj.kind);
+    const item = itemAt(obj.kind, obj.v, catalog);
     if (!item) continue;
     const [fw, fd] = rotFootprint(item.footprint, obj.rot);
-    objects.push({ obj, item, x: obj.x, y: obj.y, w: fw, d: fd });
+    if (item.kind === 'floor') objects.push({ obj, item, x: obj.x, y: obj.y, w: fw, d: fd });
+    else if (item.kind === 'floorart') floorArt.push({ obj, item, x: obj.x, y: obj.y, w: fw, d: fd, rot: obj.rot });
+    else if (item.kind === 'wall' && obj.wall) wallDecor.push({ obj, item, x: obj.x, y: obj.y, face: obj.wall });
+    else if (item.kind === 'deskitem') attached.push({ obj, item });
+  }
+  const hosts = new Map(objects.map((o) => [o.obj.id, o]));
+  const deskItems: DeskItemPiece[] = [];
+  for (const { obj, item } of attached) {
+    const host = obj.on ? hosts.get(obj.on) : undefined;
+    if (!host || host.item.surface === undefined || !obj.at) continue;
+    const [hw, hd] = host.item.footprint;
+    const [iw, id] = rotFootprint(item.footprint, obj.rot);
+    // The item's centre in the host's own frame, turned with the host to the world.
+    const [cx, cy] = turnPoint(obj.at[0] + iw / 2, obj.at[1] + id / 2, hw, hd, host.obj.rot);
+    const rot = ((host.obj.rot + obj.rot) & 3) as Rot;
+    const [ww, wd] = rotFootprint(item.footprint, rot);
+    deskItems.push({ obj, item, host, x: host.x + cx - ww / 2, y: host.y + cy - wd / 2, w: ww, d: wd, rot, z: host.item.surface });
   }
 
   if (inside(layout.spawn.x, layout.spawn.y)) cells[layout.spawn.y * w + layout.spawn.x] = 'S';
@@ -96,6 +155,9 @@ export function compileWorld(layout: Layout, catalog: Catalog = currentCatalog()
     desks: deriveDesks(objects, pods, blocked),
     spawn: { x: layout.spawn.x + 0.5, y: layout.spawn.y + 0.5 },
     objects,
+    deskItems,
+    wallDecor,
+    floorArt,
     layout,
   };
 }

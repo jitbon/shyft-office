@@ -50,6 +50,8 @@ export class OfficeState {
   private deskNotice: DeskNotice[] = [];
   /** Whether non-admin members can edit the layout. Saved. */
   buildingEnabled = true;
+  /** Whether the item helper is switched on. Saved. */
+  helperEnabled = false;
 
   constructor(
     private players: () => Iterable<OfficePlayer>,
@@ -63,6 +65,7 @@ export class OfficeState {
     for (const [podId, mode] of Object.entries(state.podModes)) this.podModeOverride.set(podId, mode);
     this.deskNotice = [...state.deskNotice];
     this.buildingEnabled = state.buildingEnabled;
+    this.helperEnabled = state.helperEnabled;
     this.onChange = opts.onChange ?? (() => {});
   }
 
@@ -104,6 +107,7 @@ export class OfficeState {
       areaAllowed: Object.fromEntries([...this.allowedOverride].map(([id, set]) => [id, [...set]])),
       deskNotice: [...this.deskNotice],
       buildingEnabled: this.buildingEnabled,
+      helperEnabled: this.helperEnabled,
     };
   }
 

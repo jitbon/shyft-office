@@ -22,9 +22,15 @@ const sample = (): StoredState => ({
   areaAllowed: { 'meet-b': ['m1', 'm2'] },
   deskNotice: [{ memberId: 'm9', kind: 'removed' }],
   buildingEnabled: false,
+  helperEnabled: true,
 });
 
 describe('state store', () => {
+  it('reads a state file saved before the helper existed as helper off', () => {
+    fs.writeFileSync(path.join(dir, 'office-state.json'), JSON.stringify({ version: 3, deskClaims: {}, podModes: {}, areaAllowed: {}, deskNotice: [], buildingEnabled: true }));
+    expect(loadState(dir).helperEnabled).toBe(false);
+  });
+
   it('round-trips a saved state', () => {
     const store = new StateStore(dir);
     store.save(sample());
@@ -122,6 +128,7 @@ describe('desks reset by the redesign (version 1 files)', () => {
       areaAllowed: { 'meet-b': ['m1'] },
       deskNotice: [{ memberId: 'm1', kind: 'reset' }, { memberId: 'm2', kind: 'reset' }],
       buildingEnabled: true,
+      helperEnabled: false,
     });
   });
 
@@ -212,7 +219,7 @@ describe('desk claims move to desk ids (version 2 files)', () => {
 
   it('starts a fresh install with nothing to tell anyone', () => {
     expect(loadState(dir)).toEqual(emptyState());
-    expect(emptyState()).toEqual({ version: 3, deskClaims: {}, podModes: {}, areaAllowed: {}, deskNotice: [], buildingEnabled: true });
+    expect(emptyState()).toEqual({ version: 3, deskClaims: {}, podModes: {}, areaAllowed: {}, deskNotice: [], buildingEnabled: true, helperEnabled: false });
     expect(fs.existsSync(file())).toBe(false);
   });
 });

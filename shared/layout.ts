@@ -4,6 +4,7 @@
 /** Inclusive tile rectangle: [x0, y0, x1, y1]. */
 export type Rect = [number, number, number, number];
 export type Rot = 0 | 1 | 2 | 3;
+export type Face = 'n' | 'e' | 's' | 'w';
 
 export interface PlacedObject {
   /** `[a-z0-9-]{1,40}`, unique in the layout. It never changes when the object is moved or turned. */
@@ -13,8 +14,15 @@ export interface PlacedObject {
   /** The top-left tile of the footprint after turning. */
   x: number;
   y: number;
-  /** Quarter turns clockwise. 0 faces down (south). */
+  /** Quarter turns clockwise. 0 faces down (south). For a desk item, relative to its host. */
   rot: Rot;
+  /** Pins this copy to an older version of its item (when the newer one would not fit where it stands). */
+  v?: number;
+  /** Desk items: the id of the object they stand on, and where on it, in that object's own (unturned) frame. */
+  on?: string;
+  at?: [number, number];
+  /** Wall decor: which face of the wall tile `(x, y)` it hangs on. */
+  wall?: Face;
 }
 
 export interface Room {
@@ -69,6 +77,26 @@ export const WALL_CODES = ['#', 'G', 'W', 'B', 'K'] as const;
 export const NO_WALL = ' ';
 export const ID_RE = /^[a-z0-9-]{1,40}$/;
 
+/** A point in an object's own frame (footprint `fw`×`fd`, facing south) to the frame it has after `rot` clockwise quarter turns. */
+export function turnPoint(lx: number, ly: number, fw: number, fd: number, rot: number): [number, number] {
+  switch (rot & 3) {
+    case 1: return [fd - ly, lx];
+    case 2: return [fw - lx, fd - ly];
+    case 3: return [ly, fw - lx];
+    default: return [lx, ly];
+  }
+}
+
+/** The opposite of `turnPoint`: a point in the turned frame back to the object's own frame. */
+export function unturnPoint(tx: number, ty: number, fw: number, fd: number, rot: number): [number, number] {
+  switch (rot & 3) {
+    case 1: return [ty, fd - tx];
+    case 2: return [fw - tx, fd - ty];
+    case 3: return [fw - ty, tx];
+    default: return [tx, ty];
+  }
+}
+
 /** The footprint after `rot` quarter turns. */
 export function rotFootprint([w, d]: readonly [number, number], rot: number): [number, number] {
   return rot % 2 === 0 ? [w, d] : [d, w];
@@ -90,6 +118,8 @@ export function parseLayout(
   raw: unknown,
   knownKind: (kind: string) => boolean,
   footprintOf: (kind: string) => readonly [number, number] | undefined,
+  /** Where an item goes (`floor`, `deskitem`, `wall`, `floorart`); anything unknown counts as `floor`. */
+  placementOf: (kind: string) => string | undefined = () => undefined,
 ): ParseResult {
   const errors: string[] = [];
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { ok: false, errors: ['not-an-object'] };
@@ -129,12 +159,22 @@ export function parseLayout(
         errors.push(`bad-object: ${id}`);
         continue;
       }
-      const fp = rotFootprint(footprintOf(kind) ?? [1, 1], o.rot);
-      if (!inside(o.x, o.y) || !inside(o.x + fp[0] - 1, o.y + fp[1] - 1)) {
+      const placement = placementOf(kind) ?? 'floor';
+      // Desk items stand on a desk and are not placed by x and y; wall decor needs only its tile in the grid.
+      const fp = placement === 'floor' || placement === 'floorart' ? rotFootprint(footprintOf(kind) ?? [1, 1], o.rot) : ([1, 1] as const);
+      if (placement !== 'deskitem' && (!inside(o.x, o.y) || !inside(o.x + fp[0] - 1, o.y + fp[1] - 1))) {
         errors.push(`object-outside: ${id}`);
         continue;
       }
-      objects.push({ id, kind, x: o.x, y: o.y, rot: o.rot });
+      const placed: PlacedObject = { id, kind, x: o.x, y: o.y, rot: o.rot };
+      if (isInt(o.v) && o.v >= 1) placed.v = o.v;
+      if (typeof o.on === 'string' && ID_RE.test(o.on)) placed.on = o.on;
+      const at = o.at as unknown[] | undefined;
+      if (Array.isArray(at) && at.length === 2 && at.every((n) => typeof n === 'number' && Number.isFinite(n))) {
+        placed.at = [Math.round((at[0] as number) * 20) / 20, Math.round((at[1] as number) * 20) / 20];
+      }
+      if (o.wall === 'n' || o.wall === 'e' || o.wall === 's' || o.wall === 'w') placed.wall = o.wall;
+      objects.push(placed);
     }
   }
 
@@ -210,9 +250,114 @@ export function parseLayout(
 export function cloneLayout(l: Layout): Layout {
   return {
     ...l,
-    objects: l.objects.map((o) => ({ ...o })),
+    objects: l.objects.map((o) => ({ ...o, ...(o.at ? { at: [...o.at] as [number, number] } : {}) })),
     rooms: l.rooms.map((r) => ({ ...r, rects: r.rects.map((q) => [...q] as Rect), allowed: [...r.allowed] })),
     pods: l.pods.map((p) => ({ ...p, rects: p.rects.map((q) => [...q] as Rect) })),
     spawn: { ...l.spawn },
   };
+}
+
+// ------------------------------------------------------------------ normalizing
+
+export interface Removed {
+  id: string;
+  /** `unknown` (its item is gone), `no-host`, `no-wall`, or `full`. */
+  why: 'unknown' | 'no-host' | 'no-wall' | 'full';
+}
+
+export interface NormalizeOptions {
+  /** Whether an item still has the version a copy is pinned to. When absent, pins are left alone. */
+  hasVersion?: (kind: string, v: number) => boolean;
+}
+
+/** Most desk items on one tile of a desk, and most wall decor items on one wall face. */
+export const MAX_ON_DESK_TILE = 6;
+export const MAX_ON_WALL_FACE = 2;
+
+export const FACE_STEP: Record<Face, [number, number]> = { n: [0, -1], e: [1, 0], s: [0, 1], w: [-1, 0] };
+
+/** Which tile of a desk (in the desk's own frame) a desk item at `at`, of size `iw`×`id`, counts as being on. */
+export const deskTileOf = (hw: number, hd: number, at: [number, number], iw: number, id: number): [number, number] => [
+  Math.min(hw - 1, Math.floor(at[0] + iw / 2)),
+  Math.min(hd - 1, Math.floor(at[1] + id / 2)),
+];
+
+/**
+ * Makes a layout consistent after an edit: drops objects whose item is gone, desk items whose desk is gone (or that
+ * have no desk to stand on), wall decor with no wall to hang on, and what is over the limits; moves a desk item that
+ * lies outside its desk back onto it. Pure; the builder, the server and the merge all run it. Returns what it removed.
+ */
+export function normalizeLayout(
+  layout: Layout,
+  catalog: ReadonlyMap<string, { kind: string; footprint: readonly [number, number]; surface?: number }>,
+  opts: NormalizeOptions = {},
+): { layout: Layout; removed: Removed[] } {
+  const l = cloneLayout(layout);
+  const removed: Removed[] = [];
+
+  // Pass 1: drop what has no item, and strip the fields that do not belong to an object of its kind.
+  const alive: PlacedObject[] = [];
+  for (const o of l.objects) {
+    const item = catalog.get(o.kind);
+    if (!item) {
+      removed.push({ id: o.id, why: 'unknown' });
+      continue;
+    }
+    if (item.kind !== 'deskitem') {
+      delete o.on;
+      delete o.at;
+    }
+    if (item.kind !== 'wall') delete o.wall;
+    if (o.v !== undefined && opts.hasVersion && !opts.hasVersion(o.kind, o.v)) delete o.v;
+    alive.push(o);
+  }
+  const byId = new Map(alive.map((o) => [o.id, o]));
+
+  // Pass 2: desk items and wall decor need something to stand on or hang on, and have limits.
+  const counts = new Map<string, number>();
+  const kept: PlacedObject[] = [];
+  for (const o of alive) {
+    const item = catalog.get(o.kind)!;
+    if (item.kind === 'deskitem') {
+      const host = o.on ? byId.get(o.on) : undefined;
+      const hostItem = host && catalog.get(host.kind);
+      if (!o.on || !o.at || !host || !hostItem || hostItem.surface === undefined) {
+        removed.push({ id: o.id, why: 'no-host' });
+        continue;
+      }
+      const [iw, id] = rotFootprint(item.footprint, o.rot);
+      const [hw, hd] = hostItem.footprint;
+      const at: [number, number] = [
+        Math.round(Math.min(Math.max(o.at[0], 0), Math.max(0, hw - iw)) * 20) / 20,
+        Math.round(Math.min(Math.max(o.at[1], 0), Math.max(0, hd - id)) * 20) / 20,
+      ];
+      const key = `${host.id}|${deskTileOf(hw, hd, at, iw, id).join(',')}`;
+      if ((counts.get(key) ?? 0) >= MAX_ON_DESK_TILE) {
+        removed.push({ id: o.id, why: 'full' });
+        continue;
+      }
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      o.at = at;
+      o.x = 0;
+      o.y = 0;
+    } else if (item.kind === 'wall') {
+      const face = o.wall;
+      const wallAt = (x: number, y: number) => x >= 0 && y >= 0 && x < l.w && y < l.h && l.walls[y * l.w + x] !== NO_WALL;
+      const openAt = (x: number, y: number) => x >= 0 && y >= 0 && x < l.w && y < l.h && l.walls[y * l.w + x] === NO_WALL;
+      const step = face ? FACE_STEP[face] : undefined;
+      if (!step || !wallAt(o.x, o.y) || !openAt(o.x + step[0], o.y + step[1])) {
+        removed.push({ id: o.id, why: 'no-wall' });
+        continue;
+      }
+      const key = `wall|${o.x},${o.y},${face}`;
+      if ((counts.get(key) ?? 0) >= MAX_ON_WALL_FACE) {
+        removed.push({ id: o.id, why: 'full' });
+        continue;
+      }
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    kept.push(o);
+  }
+  l.objects = kept;
+  return { layout: l, removed };
 }

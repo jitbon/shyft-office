@@ -1,6 +1,7 @@
 import { AREAS, DESK_PODS, areaAt, areaById, deskAt, deskById, tileAt, type Area } from '../shared/map';
 import type { ClientMsg, OfficeSnapshot, ServerMsg, ViewMode } from '../shared/protocol';
 import { session } from './session';
+import { helperStatus, onHelperStatus } from './studio/helper-ui';
 import { OFFLINE_COLOR, statusColor } from './types';
 
 /** The few things this module needs from the rest of the client. */
@@ -68,9 +69,10 @@ export function onSprites(msg: Extract<ServerMsg, { t: 'sprites' }>) {
   renderAdmin();
 }
 
-export function setAdminState(areaAllowed: Record<string, string[]>, building?: boolean) {
+export function setAdminState(areaAllowed: Record<string, string[]>, building?: boolean, helper?: boolean) {
   adminAllowed = areaAllowed;
   if (building !== undefined) buildingEnabled = building;
+  if (helper !== undefined) helperEnabled = helper;
   renderAdmin();
 }
 
@@ -396,6 +398,10 @@ function renderDeskCard() {
 
 /** Whether members may edit the office layout (the admin panel shows and sets it). */
 let buildingEnabled = true;
+/** Whether an admin has switched the item helper on (the admin panel shows and sets it). */
+let helperEnabled = false;
+
+onHelperStatus(() => renderAdmin());
 
 function renderAdmin() {
   const panel = $('adminPanel');
@@ -427,6 +433,22 @@ function renderAdmin() {
   switchLabel.append(document.createTextNode('Members can edit the office '), box);
   building.append(Object.assign(document.createElement('b'), { textContent: 'Building' }), switchLabel);
   panel.append(building);
+
+  // The item helper: off until an admin switches it on, and only possible when the server has a service set up.
+  const helper = document.createElement('div');
+  helper.className = 'group';
+  const helperLabel = document.createElement('label');
+  const helperBox = document.createElement('input');
+  helperBox.type = 'checkbox';
+  const unavailable = helperStatus() === 'unavailable' && !helperEnabled;
+  helperBox.checked = helperEnabled;
+  helperBox.disabled = unavailable;
+  helperBox.onchange = () => deps.send({ t: 'admin', op: 'helper', enabled: helperBox.checked });
+  helperLabel.append(document.createTextNode('Builders can ask the AI helper for a first draft '), helperBox);
+  helper.append(Object.assign(document.createElement('b'), { textContent: 'Item helper' }), helperLabel);
+  if (unavailable) helper.append(Object.assign(document.createElement('div'), { className: 'bnote', textContent: 'No service is set up on this server (set ITEM_AI_KEY and restart).' }));
+  else if (helperEnabled) helper.append(Object.assign(document.createElement('div'), { className: 'bnote', textContent: 'What builders type or upload for the helper is sent to the AI service set up on this server.' }));
+  panel.append(helper);
 
   const sprites = document.createElement('div');
   sprites.className = 'group';

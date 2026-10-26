@@ -7,16 +7,18 @@ import {
   type Dir, type SpriteArt, type Texture,
 } from './art';
 import { viewTexture } from './custom-objects';
-import { clipNear, makeCam, toCamera, visibleFaces, worldMeshes, type Cam, type Face, type ObjectMesh } from './mesh3d';
+import { isStyleMat, materialFor } from './materials';
+import { makeCam, visibleFaces, worldMeshes, type ObjectMesh } from './mesh3d';
+import { bakedFloorCell } from './floorart';
+import { fillFace, fog, shade } from './raster';
 import { walkFrame, type Player } from './types';
 
 const PLANE = 0.66; // camera plane half-width -> ~67 degree field of view
 const RENDER_H = 360;
 const AVATAR_SIZE = 0.62;
-/** Nearest depth drawn, in tiles. */
-const NEAR = 0.15;
-/** Furniture further than this (in tiles) is not drawn. */
+/** Furniture further than this (in tiles) is not drawn; small decoration only as far as MINOR_RANGE. */
 const FURNITURE_RANGE = 20;
+const MINOR_RANGE = 12;
 /** How high the eye is above the floor, in tiles (a person is 0.62 tall). */
 const EYE_Z = 0.5;
 
@@ -32,13 +34,6 @@ export interface Label {
   y: number;
   player: Player;
 }
-
-function shade(c: number, f: number) {
-  const r = (c & 255) * f, g = ((c >>> 8) & 255) * f, b = ((c >>> 16) & 255) * f;
-  return 0xff000000 | (b << 16) | (g << 8) | r;
-}
-
-const fog = (d: number) => Math.max(0.35, 1 / (1 + d * d * 0.01));
 
 /** Which side of a remote avatar faces the camera. */
 function facingDir(p: Player, viewX: number, viewY: number): Dir {
@@ -90,10 +85,11 @@ export class Raycaster {
   rebuild() {
     this.floorCells = [];
     this.ceilCells = [];
-    this.meshes = worldMeshes(getWorld());
+    const world = getWorld();
+    this.meshes = worldMeshes(world);
     for (let y = 0; y < MAP_H; y++) {
       for (let x = 0; x < MAP_W; x++) {
-        this.floorCells.push(this.floors[baseFloor(x, y)]);
+        this.floorCells.push(bakedFloorCell(world, x, y, this.floors[baseFloor(x, y)]));
         this.ceilCells.push(hash(x * 3, y * 5) < 0.18 ? this.ceil.light : this.ceil.plain);
       }
     }
@@ -110,59 +106,6 @@ export class Raycaster {
     this.img = this.ctx.createImageData(w, h);
     this.pix = new Uint32Array(this.img.data.buffer);
     this.depth = new Float32Array(w * h);
-  }
-
-  /** One face of a box: clipped at the near plane, projected, and filled line by line with a perspective-correct texture. */
-  private drawFace(face: Face, cam: Cam, K: number, half: number, now: number) {
-    const { w, h, pix, depth } = this;
-    const tex = this.mats[face.mat] ?? viewTexture(face.mat, now);
-    if (!tex) return; // a custom sheet that is still loading
-    const poly = clipNear(face.pts.map((p, i) => toCamera(cam, p, face.uv[i][0], face.uv[i][1])), NEAR);
-    const n = poly.length;
-    if (n < 3) return;
-    const sx = new Float64Array(n), sy = new Float64Array(n), iw = new Float64Array(n), uw = new Float64Array(n), vw = new Float64Array(n);
-    let minY = Infinity, maxY = -Infinity;
-    for (let i = 0; i < n; i++) {
-      const p = poly[i];
-      const inv = 1 / p.ty;
-      iw[i] = inv;
-      sx[i] = (w / 2) * (1 + p.tx * inv);
-      sy[i] = half + K * inv * (0.5 - p.z);
-      uw[i] = p.u * inv;
-      vw[i] = p.v * inv;
-      if (sy[i] < minY) minY = sy[i];
-      if (sy[i] > maxY) maxY = sy[i];
-    }
-    const y0 = Math.max(0, Math.ceil(minY - 0.5)), y1 = Math.min(h - 1, Math.ceil(maxY - 0.5) - 1);
-    for (let y = y0; y <= y1; y++) {
-      const yc = y + 0.5;
-      let xl = Infinity, xr = -Infinity;
-      let liw = 0, luw = 0, lvw = 0, riw = 0, ruw = 0, rvw = 0;
-      for (let i = 0; i < n; i++) {
-        const j = i + 1 === n ? 0 : i + 1;
-        const ay = sy[i], by = sy[j];
-        if (!((ay <= yc && by > yc) || (by <= yc && ay > yc))) continue;
-        const t = (yc - ay) / (by - ay);
-        const x = sx[i] + (sx[j] - sx[i]) * t;
-        const a = iw[i] + (iw[j] - iw[i]) * t, b = uw[i] + (uw[j] - uw[i]) * t, c = vw[i] + (vw[j] - vw[i]) * t;
-        if (x < xl) { xl = x; liw = a; luw = b; lvw = c; }
-        if (x > xr) { xr = x; riw = a; ruw = b; rvw = c; }
-      }
-      if (!(xr - xl > 1e-6)) continue;
-      const x0 = Math.max(0, Math.ceil(xl - 0.5)), x1 = Math.min(w - 1, Math.ceil(xr - 0.5) - 1);
-      const span = 1 / (xr - xl);
-      for (let x = x0; x <= x1; x++) {
-        const t = (x + 0.5 - xl) * span;
-        const inv = liw + (riw - liw) * t;
-        const d = 1 / inv;
-        const idx = y * w + x;
-        if (d >= depth[idx]) continue;
-        depth[idx] = d;
-        const u = (luw + (ruw - luw) * t) * d, v = (lvw + (rvw - lvw) * t) * d;
-        const tx = ((u - Math.floor(u)) * tex.w) | 0, ty = ((v - Math.floor(v)) * tex.h) | 0;
-        pix[idx] = shade(tex.data[ty * tex.w + tx], fog(d) * face.shade);
-      }
-    }
   }
 
   /** Renders the view from `me` and returns where to draw name tags (framebuffer coords). */
@@ -247,11 +190,16 @@ export class Raycaster {
 
     // Furniture: solid boxes, drawn face by face into the same depth buffer as the walls.
     const cam = makeCam(px, py, me.a, PLANE);
+    const target = { pix, depth, w, h };
     for (const m of this.meshes) {
       const dx = m.cx - px, dy = m.cy - py;
-      if (dx * dx + dy * dy > FURNITURE_RANGE * FURNITURE_RANGE) continue;
+      const range = m.minor ? MINOR_RANGE : FURNITURE_RANGE;
+      if (dx * dx + dy * dy > range * range) continue;
       if (cam.invDet * (-cam.planeY * dx + cam.planeX * dy) < -2) continue; // well behind us
-      for (const face of visibleFaces(m.faces, px, py, EYE_Z)) this.drawFace(face, cam, K, half, now);
+      for (const face of visibleFaces(m.faces, px, py, EYE_Z)) {
+        const tex = this.mats[face.mat] ?? viewTexture(face.mat, now) ?? (isStyleMat(face.mat) ? materialFor(face.mat) : null);
+        if (tex) fillFace(target, face, cam, K, half, tex); // a custom sheet that is still loading has no texture yet
+      }
     }
 
     // People: flat pictures that face the camera, painted far to near and hidden by anything solid in front of them.

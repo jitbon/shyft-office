@@ -1,5 +1,16 @@
 import type { CustomObject } from './objects';
 
+/** The light index of a studio item: enough to list it; the full design comes from `GET /api/items`. */
+export interface ItemInfo {
+  id: string;
+  name: string;
+  group: string;
+  season?: string;
+  kind: string;
+  by: string;
+  version: number;
+}
+
 export type ViewMode = '2d' | '3d';
 
 export interface Look {
@@ -92,7 +103,8 @@ export type AdminOp =
   | { op: 'podMode'; podId: string; mode: 'ambient' | 'cubicle' }
   | { op: 'reloadSprites' }
   | { op: 'areaAllowed'; areaId: string; memberIds: string[] }
-  | { op: 'building'; enabled: boolean };
+  | { op: 'building'; enabled: boolean }
+  | { op: 'helper'; enabled: boolean };
 
 export type ClientMsg =
   | { t: 'join'; name: string; look: Look; memberId?: string; avatar?: AvatarChoice; admin?: string }
@@ -129,6 +141,12 @@ export type ServerMsg =
       canBuild?: boolean;
       /** The custom furniture and objects builders have added. */
       objects?: CustomObject[];
+      /** The items members made in the studio (the ready-made ones ship with the app). */
+      items?: ItemInfo[];
+      /** The item helper's status, for builders. */
+      helper?: 'off' | 'unavailable' | 'on';
+      /** With `helper: 'unavailable'`: the service is set up but just failed, so it is worth trying again soon. */
+      helperCooling?: boolean;
     }
   | { t: 'join'; player: PlayerState }
   | { t: 'leave'; id: string }
@@ -152,6 +170,10 @@ export type ServerMsg =
   | { t: 'layout'; rev: number; by: { name: string }; at: number }
   /** The custom objects changed (one was added or removed). */
   | { t: 'objects'; objects: CustomObject[] }
+  /** A studio item was added, changed or removed: fetch the new or changed ones from `GET /api/items`. */
+  | { t: 'items'; items: ItemInfo[] }
+  /** The item helper was switched on or off, or stopped or started answering. Sent to everyone who can build. */
+  | { t: 'helper'; status: 'off' | 'unavailable' | 'on'; cooling?: boolean }
   /** An admin turned building on or off; `canBuild` is this recipient's own permission. */
   | { t: 'building'; enabled: boolean; canBuild: boolean }
   | {
@@ -167,7 +189,7 @@ export type ServerMsg =
       reply?: boolean;
       text?: string;
     }
-  | { t: 'adminState'; areaAllowed: Record<string, string[]>; buildingEnabled?: boolean }
+  | { t: 'adminState'; areaAllowed: Record<string, string[]>; buildingEnabled?: boolean; helperEnabled?: boolean }
   | {
       t: 'sprites';
       sprites: SpriteIndex;

@@ -2,8 +2,11 @@
 // This class owns the draft, the mouse and keyboard handling, saving and publishing; tools.ts makes the edits,
 // panel.ts draws the panel, and the server decides what is allowed (it checks everything again on publish).
 import { currentCatalog, customObjects, prefabById } from '../../shared/catalog';
+import { designFromItem } from '../studio/model';
+import { READY_MADE } from '../../shared/readymade';
+import { studioDefinitions } from '../items-client';
 import { validateObjectMeta, validateObjectSheet } from '../../shared/objects';
-import { cloneLayout, type Layout, type PlacedObject } from '../../shared/layout';
+import { NO_WALL, cloneLayout, rotFootprint, type Face, type Layout, type PlacedObject } from '../../shared/layout';
 import { checkLayout, type Problem } from '../../shared/layout-check';
 import { mergeLayouts, type Clash, type Side } from '../../shared/layout-merge';
 import { compileWorld, type World } from '../../shared/world';
@@ -19,6 +22,8 @@ export interface BuilderHost {
   /** The element the panel is drawn into. */
   panel: HTMLElement;
   notice(text: string, ttlMs?: number): void;
+  /** Opens the furniture studio on a design (or on the member's saved one). */
+  openStudio(seed?: { design: import('../studio/model').Design; itemId?: string }): void;
   /** Where the player stands (tiles); the camera starts there. */
   here(): { x: number; y: number };
   /** Build mode closed (by the person, or because building was switched off). */
@@ -33,6 +38,10 @@ interface Drag {
   /** Tile offset from the object's corner to where it was grabbed. */
   dx: number;
   dy: number;
+  /** Desk items and wall decor are dragged by the pointer, not by tile. */
+  attached?: 'deskitem' | 'wall';
+  /** For those: the layout the drop would give, when it is allowed. */
+  result?: Layout;
   /** Where it would land now. */
   x: number;
   y: number;
@@ -59,8 +68,13 @@ export class Builder {
   private rot = 0;
   private selected: string | null = null;
   private hover: [number, number] | null = null;
+  /** The pointer in tiles with fractions, for desk items and wall decor. */
+  private point: [number, number] | null = null;
+  private pointFrom: [number, number] = [0, 0];
   private stroke = false;
   private lastTile: [number, number] | null = null;
+  /** How many items went with a wall or desk during the stroke in progress. */
+  private strokeGone = 0;
   private drag: Drag | null = null;
   private cam = { x: 0, y: 0 };
   private saveTimer = 0;
@@ -130,6 +144,7 @@ export class Builder {
         this.brush.wall = c;
         this.setTool('wall');
       },
+      openStudio: (k) => this.openStudio(k),
       pickItem: (k) => {
         this.brush.kind = k;
         this.rot = 0;
@@ -261,11 +276,13 @@ export class Builder {
     this.emit();
   }
 
-  /** Remember the draft for undo, then change it. */
-  private commit(next: Layout) {
+  /** Remember the draft for undo, then change it. `meant` is how many objects the edit was meant to take away. */
+  private commit(next: Layout, meant = 0) {
+    const gone = this.layout.objects.length - next.objects.length - meant;
     this.history.push(this.layout);
-    this.message = '';
+    this.message = gone > 0 ? `${gone} ${gone === 1 ? 'item' : 'items'} went with ${gone === 1 ? 'its' : 'their'} desk or wall` : '';
     this.setLayout(next);
+    if (gone > 0) this.emit();
   }
 
   private undo() {
@@ -458,6 +475,28 @@ export class Builder {
     this.emit();
   }
 
+  /** Opens the studio on the item `kind`: a ready-made one as a copy, one a member made as itself (the server decides who may change it). */
+  private openStudio(kind?: string) {
+    if (!kind) return this.host.openStudio();
+    const item = currentCatalog().get(kind);
+    if (!item) return this.tell('That item isn’t there any more.');
+    // The six built-ins and uploaded objects can't be changed, but they make a fine starting point for a design of your own.
+    if (!kind.startsWith('item:')) return this.host.openStudio({ design: designFromItem(item) });
+    const made = studioDefinitions().find((r) => `item:${r.id}` === kind);
+    const ready = READY_MADE.find((r) => r.id === kind);
+    const def = made?.def ?? (ready && (({ id: _id, ...rest }) => rest)(ready));
+    if (!def) return this.tell('That item isn’t there any more.');
+    this.host.openStudio({ design: structuredClone(def), ...(made ? { itemId: made.id } : {}) });
+  }
+
+  /** Called when the studio saved or deleted an item: pick it for placing, or just redraw. */
+  itemSaved(kind: string | null) {
+    if (kind && currentCatalog().has(kind)) {
+      this.brush.kind = kind;
+      this.setTool('place');
+    } else this.emit();
+  }
+
   private turnSelected() {
     if (!this.selected) return;
     const r = tools.rotateObject(this.layout, this.selected, currentCatalog());
@@ -467,7 +506,8 @@ export class Builder {
 
   private removeSelected() {
     if (!this.selected) return;
-    this.commit(tools.deleteObject(this.layout, this.selected));
+    this.commit(tools.deleteObject(this.layout, this.selected, currentCatalog()), 1);
+    this.selected = null;
   }
 
   private applySize(w: number, h: number) {
@@ -509,8 +549,20 @@ export class Builder {
     return t.x >= 0 && t.y >= 0 && t.x < this.layout.w && t.y < this.layout.h ? [t.x, t.y] : null;
   }
 
+  private pointOf(e: MouseEvent): [number, number] {
+    const p = this.host.renderer.pointUnder(e.clientX, e.clientY);
+    return [p.x, p.y];
+  }
+
+  /** Where wall decor would hang for a pointer at (wx, wy): the wall tile and the face it is nearest. */
+  private wallSpot(wx: number, wy: number): { tx: number; ty: number; face: Face | null } {
+    const tx = Math.floor(wx), ty = Math.floor(wy);
+    return { tx, ty, face: tools.wallFaceAt(this.layout, tx, ty, wx - tx, wy - ty) };
+  }
+
   private down(e: MouseEvent) {
     if (e.button !== 0) return;
+    this.point = this.pointOf(e);
     const t = this.tileOf(e);
     if (!t) return;
     const [x, y] = t;
@@ -535,6 +587,19 @@ export class Builder {
     } else if (this.tool === 'place') {
       const item = currentCatalog().get(this.brush.kind);
       if (!item) return this.tell('That object has been removed.');
+      if (item.kind === 'deskitem') {
+        const r = tools.placeDeskItem(this.layout, this.brush.kind, this.point![0], this.point![1], this.rot, currentCatalog());
+        if (r.ok) this.commit(r.layout);
+        else this.tell(r.error);
+        return;
+      }
+      if (item.kind === 'wall') {
+        const s = this.wallSpot(this.point![0], this.point![1]);
+        const r = tools.placeWallDecor(this.layout, this.brush.kind, s.tx, s.ty, s.face, currentCatalog());
+        if (r.ok) this.commit(r.layout);
+        else this.tell(r.error);
+        return;
+      }
       const [fw, fd] = this.footprint(item.footprint);
       const r = tools.placeObject(this.layout, this.brush.kind, x - Math.floor((fw - 1) / 2), y - Math.floor((fd - 1) / 2), this.rot, currentCatalog());
       if (r.ok) this.commit(r.layout);
@@ -544,9 +609,11 @@ export class Builder {
       if (r.ok) this.commit(r.layout);
       else this.tell(r.error);
     } else {
-      const o = tools.objectAt(this.layout, x, y, currentCatalog());
+      const o = tools.hitTest(this.layout, this.point![0], this.point![1], currentCatalog());
       this.selected = o?.id ?? null;
-      this.drag = o ? { id: o.id, dx: x - o.x, dy: y - o.y, x: o.x, y: o.y, why: null, moved: false } : null;
+      const kind = o && currentCatalog().get(o.kind)?.kind;
+      this.pointFrom = [this.point![0], this.point![1]];
+      this.drag = o ? { id: o.id, dx: x - o.x, dy: y - o.y, x: o.x, y: o.y, why: null, moved: false, attached: kind === 'deskitem' || kind === 'wall' ? kind : undefined } : null;
       this.emit();
     }
   }
@@ -555,9 +622,22 @@ export class Builder {
     if (!this._active) return;
     const t = this.tileOf(e);
     this.hover = t;
+    this.point = this.pointOf(e);
     if (!t) return;
     if (this.stroke) this.paintAt(t);
-    else if (this.drag) {
+    else if (this.drag?.attached) {
+      // Desk items and wall decor follow the pointer to wherever they would land; a refusal shows in red.
+      const [wx, wy] = this.point;
+      const d = this.drag;
+      d.moved = d.moved || Math.abs(wx - this.pointFrom[0]) > 0.15 || Math.abs(wy - this.pointFrom[1]) > 0.15;
+      if (d.moved) {
+        const r = d.attached === 'wall'
+          ? (() => { const s = this.wallSpot(wx, wy); return tools.moveWallDecor(this.layout, d.id, s.tx, s.ty, s.face, currentCatalog()); })()
+          : tools.moveDeskItem(this.layout, d.id, wx, wy, currentCatalog());
+        d.why = r.ok ? null : r.error;
+        d.result = r.ok ? r.layout : undefined;
+      }
+    } else if (this.drag) {
       const o = this.layout.objects.find((q) => q.id === this.drag!.id);
       if (!o) return;
       const x = t[0] - this.drag.dx, y = t[1] - this.drag.dy;
@@ -571,11 +651,17 @@ export class Builder {
   private up() {
     if (this.stroke) {
       this.stroke = false;
+      this.strokeGone = 0;
       this.lastTile = null;
       this.scheduleSave();
     }
     const d = this.drag;
     this.drag = null;
+    if (d?.attached) {
+      if (d.moved && d.result) this.commit(d.result);
+      else if (d.moved && d.why) this.tell(d.why);
+      return;
+    }
     if (d?.moved) {
       const r = tools.moveObject(this.layout, d.id, d.x, d.y, currentCatalog());
       if (r.ok) this.commit(r.layout);
@@ -602,6 +688,13 @@ export class Builder {
         else this.message = r.error;
       } else next = tools.unpaintRegion(next, this.region.kind, tiles, this.region.id);
     } else next = tools.erase(next, tiles, currentCatalog());
+    // Decor and desk items that went with the wall or desk this stroke took away.
+    const left = new Set(next.objects.map((o) => o.id));
+    const gone = this.layout.objects.filter((o) => !left.has(o.id) && ((o.on && !left.has(o.on)) || o.wall)).filter((o) => !o.wall || next.walls[o.y * next.w + o.x] === NO_WALL || tools.wallFaceAt(next, o.x, o.y, 0.5, 0.5) === null).length;
+    if (gone) {
+      this.strokeGone += gone;
+      this.message = `${this.strokeGone} ${this.strokeGone === 1 ? 'item' : 'items'} went with ${this.strokeGone === 1 ? 'its' : 'their'} desk or wall`;
+    }
     if (JSON.stringify(next.rooms) !== JSON.stringify(this.layout.rooms) || JSON.stringify(next.pods) !== JSON.stringify(this.layout.pods)) this.setLayout(next, false);
     else if (next.floor !== this.layout.floor || next.walls !== this.layout.walls || next.objects.length !== this.layout.objects.length) {
       this.setLayout(next, false);
@@ -682,7 +775,7 @@ export class Builder {
       customs: [...customObjects()],
       uploadErrors: this.uploadErrors,
       regionMode: this.regionMode,
-      selected: sel ? { id: sel.id, name: currentCatalog().get(sel.kind)?.name ?? sel.kind } : null,
+      selected: sel ? { id: sel.id, name: currentCatalog().get(sel.kind)?.name ?? sel.kind, kind: sel.kind } : null,
       canUndo: this.history.canUndo(),
       canRedo: this.history.canRedo(),
       saveText: this.saveText,
@@ -773,8 +866,72 @@ export class Builder {
       ctx.strokeRect(ox + x0 * s + line, oy + y0 * s + line, (x1 - x0 + 1) * s - 2 * line, (y1 - y0 + 1) * s - 2 * line);
     };
 
+    const good = ['rgba(120, 230, 150, 1)', 'rgba(80, 200, 120, 0.3)'] as const;
+    const badc = ['rgba(255, 110, 120, 1)', 'rgba(224, 60, 80, 0.3)'] as const;
+    /** A box in map tiles, for items that sit between tile lines. */
+    const box = (x: number, y: number, w: number, d: number, ok: boolean) => {
+      const [stroke, fill] = ok ? good : badc;
+      ctx.fillStyle = fill;
+      ctx.fillRect(ox + x * s, oy + y * s, w * s, d * s);
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 2 * line;
+      ctx.strokeRect(ox + x * s, oy + y * s, w * s, d * s);
+    };
+    /** A short reason beside the pointer. */
+    const hint = (text: string, x: number, y: number, line: number) => {
+      const px = 13 * line;
+      ctx.font = `600 ${px}px system-ui, sans-serif`;
+      const w = ctx.measureText(text).width + 12 * line;
+      ctx.fillStyle = 'rgba(20, 22, 40, 0.88)';
+      ctx.fillRect(x + 12 * line, y - px - 6 * line, w, px + 8 * line);
+      ctx.fillStyle = '#ffb3bb';
+      ctx.fillText(text, x + 18 * line, y - 6 * line);
+    };
+    const attachedItem = this.tool === 'place' ? currentCatalog().get(this.brush.kind) : undefined;
+    if (attachedItem && this.point && !this.drag?.moved) {
+      const [wx, wy] = this.point;
+      if (attachedItem.kind === 'deskitem') {
+        const [iw, id] = this.footprint(attachedItem.footprint);
+        const r = tools.placeDeskItem(this.layout, this.brush.kind, wx, wy, this.rot, currentCatalog());
+        box(wx - iw / 2, wy - id / 2, iw, id, r.ok);
+        if (!r.ok) hint(r.error, ox + wx * s, oy + wy * s, line);
+      } else if (attachedItem.kind === 'wall') {
+        const sp = this.wallSpot(wx, wy);
+        const r = tools.placeWallDecor(this.layout, this.brush.kind, sp.tx, sp.ty, sp.face, currentCatalog());
+        const edge = sp.face === 'n' ? [0, 0, 1, 0.2] : sp.face === 's' ? [0, 0.8, 1, 0.2] : sp.face === 'w' ? [0, 0, 0.2, 1] : [0.8, 0, 0.2, 1];
+        if (sp.face) box(sp.tx + edge[0], sp.ty + edge[1], edge[2], edge[3], r.ok);
+        else outline([[sp.tx, sp.ty]], badc[0], badc[1]);
+        if (!r.ok) hint(r.error, ox + wx * s, oy + wy * s, line);
+      }
+    }
+    const dragged = this.drag?.attached && this.drag.moved ? this.layout.objects.find((q) => q.id === this.drag!.id) : undefined;
+    if (dragged && this.point) {
+      const item = currentCatalog().get(dragged.kind);
+      if (item && this.drag!.attached === 'deskitem') {
+        const [iw, id] = rotFootprint(item.footprint, dragged.rot);
+        box(this.point[0] - iw / 2, this.point[1] - id / 2, iw, id, !this.drag!.why);
+      } else if (item) {
+        const sp = this.wallSpot(this.point[0], this.point[1]);
+        outline([[sp.tx, sp.ty]], this.drag!.why ? badc[0] : good[0], this.drag!.why ? badc[1] : good[1]);
+      }
+      if (this.drag!.why) hint(this.drag!.why, ox + this.point[0] * s, oy + this.point[1] * s, line);
+    }
+
     const sel = this.layout.objects.find((o) => o.id === this.selected);
-    if (sel && !this.drag?.moved) outline(tools.coverOf(sel, currentCatalog()), 'rgba(241, 196, 83, 1)', 'rgba(241, 196, 83, 0.15)');
+    if (sel && !this.drag?.moved) {
+      const k = currentCatalog().get(sel.kind)?.kind;
+      if (k === 'floor') outline(tools.coverOf(sel, currentCatalog()), 'rgba(241, 196, 83, 1)', 'rgba(241, 196, 83, 0.15)');
+      else if (k === 'floorart') outline(tools.artTiles(sel, currentCatalog()), 'rgba(241, 196, 83, 1)', 'rgba(241, 196, 83, 0.15)');
+      else if (k === 'wall') outline([[sel.x, sel.y]], 'rgba(241, 196, 83, 1)', 'rgba(241, 196, 83, 0.15)');
+      else {
+        const piece = compileWorld(this.layout, currentCatalog()).deskItems.find((i) => i.obj.id === sel.id);
+        if (piece) {
+          ctx.strokeStyle = 'rgba(241, 196, 83, 1)';
+          ctx.lineWidth = 2 * line;
+          ctx.strokeRect(ox + piece.x * s, oy + piece.y * s, piece.w * s, piece.d * s);
+        }
+      }
+    }
 
     if (this.drag?.moved) {
       const o = this.layout.objects.find((q) => q.id === this.drag!.id);
