@@ -16,18 +16,53 @@ const DURATIONS = [{ minutes: 0, label: 'Until I change it' }, { minutes: 15, la
 
 let deps: StatusDeps | null = null;
 let draftKind: StatusKind = 'available';
+/** Closes the status panel (set up in `initStatus`). */
+let hideStatusPanel: () => void = () => {};
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 export function initStatus(d: StatusDeps) {
   deps = d;
   const btn = $<HTMLButtonElement>('statusBtn');
-  btn.onclick = () => {
-    const panel = $('statusPanel');
-    panel.hidden = !panel.hidden;
+  const panel = $('statusPanel');
+  // Hovering the button opens the panel; moving away closes it after a moment. Clicking pins it open (and again to close), so it
+  // also works without a hover (a touch screen) and while typing a note.
+  let pinned = false;
+  let timer = 0;
+  const open = () => {
+    clearTimeout(timer);
+    if (!panel.hidden) return;
+    panel.hidden = false;
     draftKind = d.current().kind;
     renderPanel();
+  };
+  const close = () => {
+    clearTimeout(timer);
+    pinned = false;
+    panel.hidden = true;
+    btn.classList.remove('on');
+  };
+  const closeSoon = () => {
+    clearTimeout(timer);
+    if (pinned) return;
+    timer = window.setTimeout(() => {
+      const busy = btn.matches(':hover') || panel.matches(':hover') || panel.contains(document.activeElement);
+      if (!pinned && !busy) close();
+    }, 300);
+  };
+  btn.onmouseenter = open;
+  btn.onmouseleave = closeSoon;
+  panel.onmouseenter = () => clearTimeout(timer);
+  panel.onmouseleave = closeSoon;
+  btn.onclick = () => {
+    if (panel.hidden) {
+      open();
+      pinned = true;
+    } else if (pinned) close();
+    else pinned = true; // opened by hover: keep it
+    btn.classList.toggle('on', !panel.hidden);
     btn.blur();
   };
+  hideStatusPanel = close;
   // Ctrl+U (⌘+U on a Mac) flips Do Not Disturb, as in Gather. Browsers use it for "view source", so we claim it.
   window.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.code !== 'KeyU' || e.repeat) return;
@@ -99,8 +134,7 @@ function renderPanel() {
   const set = Object.assign(document.createElement('button'), { type: 'button', textContent: 'Set status' });
   set.onclick = () => {
     setStatus(draftKind, text.value, Number(when.value));
-    panel.hidden = true;
-    $('statusBtn').classList.remove('on');
+    hideStatusPanel();
   };
   panel.append(text, when, set);
 }

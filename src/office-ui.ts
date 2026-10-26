@@ -1,5 +1,6 @@
 import { AREAS, DESK_PODS, areaAt, areaById, deskAt, deskById, tileAt, type Area } from '../shared/map';
 import type { ClientMsg, OfficeSnapshot, ServerMsg, ViewMode } from '../shared/protocol';
+import { deskViewOn, setDeskViewOn } from './desk-presence';
 import { session } from './session';
 import { helperStatus, onHelperStatus } from './studio/helper-ui';
 import { OFFLINE_COLOR, statusColor } from './types';
@@ -292,6 +293,27 @@ export function facedDesk(): string | null {
   return null;
 }
 
+/** Desk id to the member id of its owner, for every claimed desk (what desk presence needs to tell your own desk). */
+export function deskOwners(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const d of office?.desks ?? []) if (d.owner) out[d.id] = d.owner.memberId;
+  return out;
+}
+
+/** What to call a desk space you are in: "Your desk", "<owner>'s desk" or "Free desk". */
+export function deskTitle(deskId: string): string {
+  const owner = office?.desks.find((d) => d.id === deskId)?.owner;
+  if (!owner) return 'Free desk';
+  return owner.memberId === deps.me().memberId ? 'Your desk' : `${owner.name}'s desk`;
+}
+
+/** Shows or hides the small "Your desk" cue. */
+export function showDeskCue(text: string | null) {
+  const el = $('deskCue');
+  el.hidden = !text;
+  if (text && el.textContent !== text) el.textContent = text;
+}
+
 /** Shows or hides the "press F" hint. */
 export function showDeskHint(deskId: string | null) {
   const el = $('deskHint');
@@ -375,6 +397,15 @@ function renderDeskCard() {
     act('Walk to my desk', () => deps.send({ t: 'walkToDesk' }));
   }
   card.append(actions);
+
+  if (mine) {
+    const auto = document.createElement('label');
+    auto.className = 'autoview';
+    const box = Object.assign(document.createElement('input'), { type: 'checkbox', checked: deskViewOn() });
+    box.onchange = () => setDeskViewOn(box.checked);
+    auto.append(box, document.createTextNode(' Show my video view when I’m at a desk or in a meeting room'));
+    card.append(auto);
+  }
 
   if (mine) {
     const invite = document.createElement('div');

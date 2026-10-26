@@ -166,12 +166,37 @@ export function compileWorld(layout: Layout, catalog: Catalog = currentCatalog()
  * A desk object is claimable when a chair stands against one of its long sides and that chair is inside a pod.
  * The desk keeps its object id, so moving it (with its chair) never changes who owns it.
  */
+/**
+ * A desk's space is a 3×3 block: the desk (3 tiles on its long side), the chair against it, and the row of floor behind the chair,
+ * with the chair in the middle of its row. A desk or chair that does not fit that shape (a 2-wide desk, a thicker desk) gets the
+ * smallest block of at least 3×3 that holds the desk and its seat, grown away from the desk and towards higher coordinates.
+ */
+function deskBox(o: WorldObject, chair: WorldObject, seat: { x: number; y: number }): { x: number; y: number }[] {
+  let x0 = Math.min(o.x, seat.x), x1 = Math.max(o.x + o.w - 1, seat.x);
+  let y0 = Math.min(o.y, seat.y), y1 = Math.max(o.y + o.d - 1, seat.y);
+  const horizontal = o.w >= o.d;
+  if (horizontal) {
+    const need = 3 - (y1 - y0 + 1);
+    if (need > 0) chair.y < o.y ? (y0 -= need) : (y1 += need); // behind the chair
+    const along = 3 - (x1 - x0 + 1);
+    if (along > 0) x1 += along;
+  } else {
+    const need = 3 - (x1 - x0 + 1);
+    if (need > 0) chair.x < o.x ? (x0 -= need) : (x1 += need);
+    const along = 3 - (y1 - y0 + 1);
+    if (along > 0) y1 += along;
+  }
+  const out: { x: number; y: number }[] = [];
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) out.push({ x, y });
+  return out;
+}
+
 function deriveDesks(objects: WorldObject[], pods: DeskPod[], blocked: (x: number, y: number) => boolean): Desk[] {
   const chairAt = new Map<string, WorldObject>();
   for (const o of objects) if (o.item.tile === 'h') for (let y = o.y; y < o.y + o.d; y++) for (let x = o.x; x < o.x + o.w; x++) chairAt.set(keyOf(x, y), o);
   const podOf = (x: number, y: number) => pods.find((p) => p.rects.some((r) => inRect(x, y, r)));
 
-  interface Raw { id: string; pod: DeskPod; seat: { x: number; y: number }; surface: { x: number; y: number }[]; key: string }
+  interface Raw { id: string; pod: DeskPod; seat: { x: number; y: number }; surface: { x: number; y: number }[]; key: string; box: { x: number; y: number }[] }
   const raws: Raw[] = [];
   for (const o of objects) {
     if (o.item.tile !== 'd') continue;
@@ -188,7 +213,7 @@ function deriveDesks(objects: WorldObject[], pods: DeskPod[], blocked: (x: numbe
     const surface: { x: number; y: number }[] = [];
     for (let y = o.y; y < o.y + o.d; y++) for (let x = o.x; x < o.x + o.w; x++) surface.push({ x, y });
     const seat = { x: chair.x, y: chair.y };
-    raws.push({ id: o.obj.id, pod, seat, surface, key: `${pod.id}:${seat.x},${seat.y}` });
+    raws.push({ id: o.obj.id, pod, seat, surface, key: `${pod.id}:${seat.x},${seat.y}`, box: deskBox(o, chair, seat) });
   }
   // Pods in order, then by chair position: the first free desk is always the same one.
   raws.sort((a, b) => pods.indexOf(a.pod) - pods.indexOf(b.pod) || a.seat.y - b.seat.y || a.seat.x - b.seat.x || (a.id < b.id ? -1 : 1));
@@ -201,17 +226,12 @@ function deriveDesks(objects: WorldObject[], pods: DeskPod[], blocked: (x: numbe
   }
   const ring = new Map<string, { tile: { x: number; y: number }; desk: Raw; dist: number }>();
   for (const d of raws) {
-    for (const base of [d.seat, ...d.surface]) {
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const t = { x: base.x + dx, y: base.y + dy };
-          const k = keyOf(t.x, t.y);
-          if (owned.has(k) || blocked(t.x, t.y) || !d.pod.rects.some((r) => inRect(t.x, t.y, r))) continue;
-          const dist = Math.hypot(t.x - d.seat.x, t.y - d.seat.y);
-          const best = ring.get(k);
-          if (!best || dist < best.dist || (dist === best.dist && d.key < best.desk.key)) ring.set(k, { tile: t, desk: d, dist });
-        }
-      }
+    for (const t of d.box) {
+      const k = keyOf(t.x, t.y);
+      if (owned.has(k) || blocked(t.x, t.y) || !d.pod.rects.some((r) => inRect(t.x, t.y, r))) continue;
+      const dist = Math.hypot(t.x - d.seat.x, t.y - d.seat.y);
+      const best = ring.get(k);
+      if (!best || dist < best.dist || (dist === best.dist && d.key < best.desk.key)) ring.set(k, { tile: t, desk: d, dist });
     }
   }
   return raws.map((d) => ({

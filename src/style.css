@@ -114,6 +114,19 @@ select {
 .dot.busy { background: #f1c453; }
 .dot.dnd { background: #e04f5f; }
 
+#deskCue {
+  left: 50%;
+  top: 70px;
+  transform: translateX(-50%);
+  font: 800 14px/1.2 var(--font);
+  padding: 6px 16px;
+  border-radius: var(--radius-pill);
+  color: var(--ink);
+  background: var(--accent);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 #deskHint {
   left: 50%;
   bottom: 24%;
@@ -157,7 +170,7 @@ select {
   flex-direction: column;
   gap: 8px;
 }
-body:has(#modes [data-mode='3d'].on) #statusPanel { top: 190px; }
+body:has(#viewToggle [data-mode='3d'].on) #statusPanel { top: 190px; }
 #statusPanel .head { font: 800 12px/1.4 var(--font); color: var(--muted); }
 #statusPanel .kinds { display: flex; flex-direction: column; gap: 4px; }
 #statusPanel .kinds button { display: flex; align-items: center; text-align: left; }
@@ -178,7 +191,7 @@ body:has(#modes [data-mode='3d'].on) #statusPanel { top: 190px; }
   flex-direction: column;
   gap: 8px;
 }
-body:has(#modes [data-mode='3d'].on) #adminPanel { top: 190px; }
+body:has(#viewToggle [data-mode='3d'].on) #adminPanel { top: 190px; }
 #adminPanel .head { font: 800 12px/1.4 var(--font); color: var(--muted); }
 #adminPanel .sys { color: var(--muted); }
 #adminPanel .group { display: flex; flex-direction: column; gap: 2px; }
@@ -197,16 +210,53 @@ body:has(#modes [data-mode='3d'].on) #adminPanel { top: 190px; }
 .person.near { color: var(--accent); }
 .tag { font-size: 12px; color: var(--muted); margin: 0 4px; }
 
-#modes {
-  top: 16px;
-  right: 16px;
+/* The top bar: two separate pills at the top right (actions, then the 2D/3D switch), kept short so the area name in the middle stays visible. */
+#topright { position: fixed; top: 16px; right: 16px; display: flex; align-items: center; gap: 10px; }
+.pill {
   display: flex;
-  gap: 6px;
-  padding: 6px;
+  align-items: center;
+  gap: 4px;
+  padding: 5px;
+  background: var(--panel);
+  border: 1px solid var(--line);
   border-radius: var(--radius-pill);
+  box-shadow: var(--shadow);
 }
-body:has(#modes [data-mode='3d'].on) #modes { top: 140px; }
-#modes button { border-radius: var(--radius-pill); padding: 6px 14px; }
+.pill button { border-radius: var(--radius-pill); padding: 6px 12px; }
+.pill .sep { width: 1px; align-self: stretch; margin: 4px 2px; background: var(--line); }
+#viewToggle { gap: 0; }
+#viewToggle button { background: transparent; padding: 6px 14px; }
+#viewToggle button:hover { background: var(--line); }
+#viewToggle button.on { background: var(--accent); color: var(--ink); }
+body:has(#viewToggle [data-mode='3d'].on) #topright { top: 140px; }
+@media (max-width: 1150px) { #topright { flex-direction: column; align-items: flex-end; gap: 8px; } }
+
+/* Mic and camera as icon buttons: filled when on, muted red with a slash when off. */
+button.icon { display: grid; place-items: center; padding: 6px 9px; text-decoration: none; }
+button.icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+button.icon .slash { display: none; }
+button.icon.off .slash { display: block; }
+button.icon:not(.off) { background: var(--accent); color: var(--ink); }
+button.icon.off { background: var(--line); color: #ff8a96; }
+button.icon:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Build mode is a floating button of its own, away from the bar. */
+#buildBtn.float {
+  position: fixed;
+  right: 16px;
+  bottom: 112px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow);
+}
+#buildBtn.float:hover { background: #4d537f; }
+#buildBtn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+body.building #buildBtn { display: none; }
 
 #chat {
   left: 16px;
@@ -339,7 +389,7 @@ button.off { color: var(--muted); text-decoration: line-through; }
   gap: 10px;
 }
 #builderPanel > * { flex: none; }
-body.building #statusPanel, body.building #adminPanel, body.building #help, body.building #deskCard, body.building #deskHint { display: none; }
+body.building #statusPanel, body.building #adminPanel, body.building #help, body.building #deskCard, body.building #deskHint, body.building #deskCue { display: none; }
 #builderPanel .bhead { display: flex; align-items: center; gap: 6px; }
 #builderPanel .bhead b { flex: 1; font-weight: 800; }
 #builderPanel .bnote { color: var(--muted); font-size: 13px; }
@@ -381,7 +431,7 @@ body.building #statusPanel, body.building #adminPanel, body.building #help, body
 #builderPanel .bfoot { display: flex; justify-content: space-between; gap: 6px; }
 #builderPanel button.primary { margin: 0; padding: 7px 14px; font-size: 14px; border-radius: var(--radius-sm); }
 #builderPanel button:disabled { opacity: 0.45; cursor: not-allowed; }
-#buildBtn.on { background: var(--accent); color: var(--ink); }
+#buildBtn.float.on { background: var(--accent); color: var(--ink); }
 
 @media (max-width: 700px) {
   #callPanel { top: 56px; }
@@ -429,3 +479,8 @@ body.building #statusPanel, body.building #adminPanel, body.building #help, body
 #studio .shelper textarea { width: 100%; box-sizing: border-box; resize: vertical; font: inherit; padding: 4px 6px; }
 #builderPanel .primary { background: var(--accent); color: var(--ink); font-weight: 800; }
 #builderPanel .pick .credit { color: var(--muted); font-size: 10px; line-height: 1.1; text-align: center; }
+
+/* Mic and camera buttons on your own tile. */
+.tile .tilebar { position: absolute; left: 0; right: 0; bottom: 18px; display: flex; justify-content: center; gap: 4px; }
+.tile .tilebtn { padding: 1px 8px; font-size: 11px; border-radius: var(--radius-pill); background: rgba(20, 22, 40, 0.8); }
+#deskCard .autoview { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); margin-top: 6px; }

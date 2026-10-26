@@ -4,6 +4,8 @@ import { frameAt, viewCanvas } from './custom-objects';
 import { drawablesOf, isPictured, tileSignatures, type Drawable } from './drawables';
 import { flatPicture, itemPicture } from './item2d';
 import { TILE, drawFloor, drawFurniture2D, drawTurned2D, drawWall2D, drawWelcomeMat, makeCanvas, type Dir } from './art';
+import { outlineEdges } from '../shared/desk-presence';
+import { hopHeight } from '../shared/jump';
 import type { DeskTag } from './office-ui';
 import { statusColor, walkFrame, type Player } from './types';
 
@@ -14,6 +16,10 @@ export function dirFromAngle(a: number): Dir {
   if (Math.abs(c) > Math.abs(s)) return c > 0 ? 'right' : 'left';
   return s > 0 ? 'down' : 'up';
 }
+
+/** The same desk space: equal tile lists (the two lists may be different arrays of one desk). */
+const sameTiles = (a: readonly { x: number; y: number }[], b: readonly { x: number; y: number }[]) =>
+  a.length === b.length && a.every((t, i) => t.x === b[i].x && t.y === b[i].y);
 
 const gridAt = (w: World, x: number, y: number) => (x < 0 || y < 0 || x >= w.w || y >= w.h ? '#' : w.grid[y][x]);
 
@@ -264,7 +270,24 @@ export class Renderer2D {
   areaLabel: string | null = null;
   /** Claimed desks to label and highlight. */
   deskTags: DeskTag[] = [];
+  /** The desk space you are standing in, drawn with a strong fill and an edge; null when you are in none. */
+  deskPresence: { tiles: readonly { x: number; y: number }[]; mine: boolean } | null = null;
   private view = { ox: 0, oy: 0, s: TILE, dpr: 1 };
+
+  /** The desk space you are in: a strong fill over every tile and an edge along its outside (warm for your own, cool for another's). */
+  private drawDeskSpace(ctx: CanvasRenderingContext2D, ox: number, oy: number, s: number, dpr: number, p: { tiles: readonly { x: number; y: number }[]; mine: boolean }) {
+    ctx.fillStyle = p.mine ? 'rgba(241, 196, 83, 0.35)' : 'rgba(120, 170, 255, 0.3)';
+    for (const t of p.tiles) ctx.fillRect(ox + t.x * s, oy + t.y * s, s, s);
+    ctx.strokeStyle = p.mine ? 'rgba(241, 196, 83, 0.95)' : 'rgba(150, 190, 255, 0.95)';
+    ctx.lineWidth = 3 * dpr;
+    ctx.lineCap = 'square';
+    ctx.beginPath();
+    for (const e of outlineEdges(p.tiles)) {
+      ctx.moveTo(ox + e.x1 * s, oy + e.y1 * s);
+      ctx.lineTo(ox + e.x2 * s, oy + e.y2 * s);
+    }
+    ctx.stroke();
+  }
 
   /** Custom objects: the top view of the sheet's current frame, turned the way the object faces. */
   private drawCustom(ctx: CanvasRenderingContext2D, ox: number, oy: number, s: number) {
@@ -328,21 +351,28 @@ export class Renderer2D {
     this.overlay?.(ctx, { ox, oy, s, k, dpr }, now);
 
     // A soft glow on your own desk, so you can find it at a glance.
+    const inside = this.deskPresence;
     ctx.fillStyle = 'rgba(241, 196, 83, 0.2)';
     for (const tag of this.deskTags) {
-      if (tag.mine) for (const t of tag.tiles) ctx.fillRect(ox + t.x * s, oy + t.y * s, s, s);
+      // The space you are standing in gets the stronger fill below instead, so the two do not stack.
+      if (tag.mine && !(inside && sameTiles(inside.tiles, tag.tiles))) for (const t of tag.tiles) ctx.fillRect(ox + t.x * s, oy + t.y * s, s, s);
     }
+    if (inside) this.drawDeskSpace(ctx, ox, oy, s, dpr, inside);
 
     const sorted = [...players].sort((a, b) => a.y - b.y);
+    const clock = Date.now();
     for (const p of sorted) {
       const fx = ox + p.x * s, fy = oy + p.y * s;
+      // Mid-jump the body rises up the screen and its shadow on the floor shrinks.
+      const lift = hopHeight(p.jumpAt, clock) * s;
+      const shrink = 1 - lift / (s * 1.4);
       ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
       ctx.beginPath();
-      ctx.ellipse(fx, fy, 10 * k, 4 * k, 0, 0, Math.PI * 2);
+      ctx.ellipse(fx, fy, 10 * k * shrink, 4 * k * shrink, 0, 0, Math.PI * 2);
       ctx.fill();
       // A frame is TILE px square with the feet two art pixels below the position, centred.
       const img = p.avatar.frames[dirFromAngle(p.a)][walkFrame(p)];
-      ctx.drawImage(img, Math.round(fx - (TILE / 2) * k), Math.round(fy - (TILE - 2) * k), TILE * k, TILE * k);
+      ctx.drawImage(img, Math.round(fx - (TILE / 2) * k), Math.round(fy - lift - (TILE - 2) * k), TILE * k, TILE * k);
     }
 
     // Spotlight the private room you're in, like a meeting with the door closed.
@@ -381,7 +411,7 @@ export class Renderer2D {
     }
 
     for (const p of sorted) {
-      const fx = ox + p.x * s, fy = oy + p.y * s;
+      const fx = ox + p.x * s, fy = oy + p.y * s - hopHeight(p.jumpAt, clock) * s;
       const top = drawNameTag(ctx, p.name, fx / dpr, (fy - (TILE - 2) * k) / dpr - 2, 18, statusColor(p.status));
       if (p.bubble && p.bubble.until > now) drawBubble(ctx, p.bubble.text, fx / dpr, top);
     }

@@ -11,7 +11,7 @@ import { CallPanel, type TileInfo } from './callPanel';
 import { changeCharacter, getMemberId, showJoinScreen } from './join';
 import { MeshTransport } from './media';
 import {
-  areaLabel, blocked, closeDeskCard, notice, deskCardOpen, deskMarkers, deskTags, facedDesk, initOfficeUi, onNotify,
+  areaLabel, blocked, closeDeskCard, deskTitle, showDeskCue, notice, deskCardOpen, deskMarkers, deskTags, facedDesk, initOfficeUi, onNotify,
   onSprites, onWelcome, openDeskCard, predictEntry, setAdminState, setBuilding, setOffice, showDeskHint, updateArea, walkToMyDesk,
 } from './office-ui';
 import { Net } from './net';
@@ -22,6 +22,10 @@ import { defaultZoom, rescale, stepZoom } from './scale';
 import { handleSocialNotify, initStatus, refreshStatusUi } from './status';
 import { statusColor, type Player } from './types';
 import { updateCustomObjects } from './custom-objects';
+import { deskCueText, deskPresenceNow, roomViewNow } from './desk-presence';
+import { icon } from './icons';
+import { canJump } from '../shared/jump';
+import { panelPlan } from '../shared/desk-presence';
 import { syncItems, onItemsChanged } from './items-client';
 import { Studio } from './studio/studio';
 import { onHelperStatus, setHelperStatus } from './studio/helper-ui';
@@ -44,7 +48,7 @@ const raycaster = new Raycaster();
 const buildBtn = $<HTMLButtonElement>('buildBtn');
 const net = new Net();
 const media = new MeshTransport();
-const callPanel = new CallPanel($('callPanel'));
+const callPanel = new CallPanel($('callPanel'), (which) => toggleDevice(which));
 const studio = new Studio({
   notice: (text) => notice(text, { key: 'studio', ttlMs: 3000 }),
   onItemChanged: (id) => builder.itemSaved(id),
@@ -138,6 +142,16 @@ window.addEventListener('keydown', (e) => {
   }
   if ((e.code === 'KeyM' || e.code === 'KeyC') && !e.repeat) {
     toggleDevice(e.code === 'KeyM' ? 'mic' : 'cam');
+    return;
+  }
+  if (e.code === 'Space' && !e.repeat) {
+    // Jump: only for show. You rise and land where you took off; it moves you nowhere and changes no rule.
+    e.preventDefault();
+    const now = Date.now();
+    if (canJump(me.jumpAt, now)) {
+      me.jumpAt = now;
+      net.send({ t: 'jump' });
+    }
     return;
   }
   if (e.code === 'KeyG' && !e.repeat) {
@@ -240,6 +254,9 @@ $<HTMLButtonElement>('characterBtn').onclick = async (e) => {
   joinMsg.avatar = next.avatar;
 };
 
+micBtn.innerHTML = icon('mic');
+camBtn.innerHTML = icon('cam');
+buildBtn.innerHTML = `${icon('build')}<span>Build</span>`;
 micBtn.onclick = () => {
   toggleDevice('mic');
   micBtn.blur();
@@ -373,11 +390,28 @@ async function warnIfDevicesBlocked() {
   );
 }
 
+/** Your own desk's id while its video view is due (you have stayed on it), otherwise null. Set from desk presence each frame. */
+let deskView: string | null = null; // (any desk space, yours or not)
+/** The name of the meeting room you are in on your own, while its one-tile view is due, otherwise null. */
+let roomView: string | null = null;
+
+/** Your own tile: the same in the conversation and at your desk. */
+function selfTile(): TileInfo {
+  return { id: me.id, name: me.name, mic: me.mic, cam: me.cam, avatar: me.avatar.frames.down[0], stream: media.localVideo(), self: true, talking: media.selfTalking() };
+}
+
 function refreshCallPanel() {
-  if (!conversation) {
+  const plan = panelPlan({ conversation: conversation ? conversation.label : null, deskConversation: !!conversation?.context.startsWith('desk:'), desk: deskView ? deskTitle(deskView) : null, room: roomView });
+  if (plan.kind === 'none') {
     callPanel.render(null, [], false);
     return;
   }
+  if (plan.kind === 'desk') {
+    // At a desk (or a room) with nobody linked: just you, with the mic and camera buttons. Nothing is turned on or sent.
+    callPanel.render(plan.heading, [selfTile()], false, 'desk');
+    return;
+  }
+  if (!conversation) return;
   const streams = media.streams();
   const talking = media.talking();
   const tiles: TileInfo[] = [];
@@ -395,7 +429,7 @@ function refreshCallPanel() {
       talking: self ? media.selfTalking() : talking.has(p.id),
     });
   }
-  callPanel.render(conversation.label, tiles, convFull);
+  callPanel.render(plan.heading, tiles, convFull, 'conversation');
 }
 
 function setMode(next: ViewMode) {
@@ -409,8 +443,8 @@ function setMode(next: ViewMode) {
 function updateHints() {
   $('help').innerHTML =
     mode === '2d'
-      ? '<b>WASD</b>/arrows move · <b>Shift</b> run · <b>Tab</b> first person · <b>Enter</b> chat · <b>+/-</b> zoom · <b>M</b> mic · <b>C</b> camera · <b>G</b> my desk · click a desk'
-      : '<b>WASD</b> move · <b>mouse</b>/<b>←→</b> look · <b>Shift</b> run · <b>Tab</b> top-down · <b>Enter</b> chat · <b>M</b> mic · <b>C</b> camera · <b>G</b> my desk · <b>F</b> desk menu';
+      ? '<b>WASD</b>/arrows move · <b>Shift</b> run · <b>Space</b> jump · <b>Tab</b> first person · <b>Enter</b> chat · <b>+/-</b> zoom · <b>M</b> mic · <b>C</b> camera · <b>G</b> my desk · click a desk'
+      : '<b>WASD</b> move · <b>mouse</b>/<b>←→</b> look · <b>Shift</b> run · <b>Space</b> jump · <b>Tab</b> top-down · <b>Enter</b> chat · <b>M</b> mic · <b>C</b> camera · <b>G</b> my desk · <b>F</b> desk menu';
   updateLockHint();
 }
 
@@ -472,6 +506,11 @@ function onMessage(msg: ServerMsg) {
       if (p) systemLine(`${p.name} left`);
       refreshCallPanel();
       renderPeople();
+      break;
+    }
+    case 'jump': {
+      const p = others.get(msg.id);
+      if (p) p.jumpAt = Date.now();
       break;
     }
     case 'state': {
@@ -780,7 +819,17 @@ function drawMinimap(w: number) {
 function render(now: number) {
   const w = canvas.width, h = canvas.height;
   const people = [me, ...others.values()];
+  // Which desk space you are in: a strong highlight top-down, and the "Your desk" cue in both views.
+  const { highlight, view } = deskPresenceNow(me, now);
+  showDeskCue(view ? null : deskCueText(highlight)); // once the desk view is open its heading says "Your desk"
+  const room = roomViewNow(me, now);
+  if (view !== deskView || room !== roomView) {
+    deskView = view;
+    roomView = room;
+    refreshCallPanel(); // the desk or room view opens or closes
+  }
   if (mode === '2d') {
+    renderer2d.deskPresence = highlight && { tiles: highlight.tiles, mine: highlight.mine };
     renderer2d.deskTags = deskTags(hoverDesk);
     renderer2d.render(ctx, w, h, zoom, dpr, me, people, now);
   } else {

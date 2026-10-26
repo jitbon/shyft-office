@@ -11,6 +11,7 @@ import { isStyleMat, materialFor } from './materials';
 import { makeCam, visibleFaces, worldMeshes, type ObjectMesh } from './mesh3d';
 import { bakedFloorCell } from './floorart';
 import { fillFace, fog, shade } from './raster';
+import { hopHeight } from '../shared/jump';
 import { walkFrame, type Player } from './types';
 
 const PLANE = 0.66; // camera plane half-width -> ~67 degree field of view
@@ -19,8 +20,10 @@ const AVATAR_SIZE = 0.62;
 /** Furniture further than this (in tiles) is not drawn; small decoration only as far as MINOR_RANGE. */
 const FURNITURE_RANGE = 20;
 const MINOR_RANGE = 12;
-/** How high the eye is above the floor, in tiles (a person is 0.62 tall). */
+/** How high the eye is above the floor, in tiles (a person is 0.62 tall); a jump lifts it for a moment. */
 const EYE_Z = 0.5;
+/** How high the ceiling is, in tiles. Walls reach it; the part above a tile's height is plain wall. The top-down view is unchanged. */
+export const CEILING_Z = 1.4;
 
 interface Sprite {
   x: number;
@@ -111,6 +114,7 @@ export class Raycaster {
   /** Renders the view from `me` and returns where to draw name tags (framebuffer coords). */
   render(me: Player, others: Player[], now = 0): Label[] {
     const { w, h, pix, depth } = this;
+    const eye = EYE_Z + hopHeight(me.jumpAt, now);
     depth.fill(Infinity);
     const half = h / 2;
     const K = w / (2 * PLANE); // projection scale: pixels per world unit at distance 1
@@ -121,24 +125,26 @@ export class Raycaster {
     // Floor and ceiling, one horizontal span per row.
     const rdx0 = dirX - planeX, rdy0 = dirY - planeY;
     const rdx1 = dirX + planeX, rdy1 = dirY + planeY;
-    for (let y = Math.floor(half); y < h; y++) {
-      const rowDist = K / 2 / (y - half + 0.5);
+    // The floor is `eye` below the eye and the ceiling `CEILING_Z - eye` above it, so each half has its own row distances.
+    const floorRow = (y: number, rowDist: number, cells: Texture[], fallback: Texture) => {
       const stepX = (rowDist * (rdx1 - rdx0)) / w, stepY = (rowDist * (rdy1 - rdy0)) / w;
       let fx = px + rowDist * rdx0, fy = py + rowDist * rdy0;
       const f = fog(rowDist);
-      const rowF = y * w, rowC = (h - 1 - y) * w;
+      const row = y * w;
       for (let x = 0; x < w; x++) {
         const cx = Math.floor(fx), cy = Math.floor(fy);
         const t = ((fy - cy) * TEX) & (TEX - 1), s = ((fx - cx) * TEX) & (TEX - 1);
-        const idx = cy * MAP_W + cx;
         const inside = cx >= 0 && cy >= 0 && cx < MAP_W && cy < MAP_H;
-        const ft = inside ? this.floorCells[idx] : this.floorCells[0];
-        const ct = inside ? this.ceilCells[idx] : this.ceil.plain;
-        pix[rowF + x] = shade(ft.data[t * TEX + s], f);
-        pix[rowC + x] = shade(ct.data[t * TEX + s], f);
+        const tex = inside ? cells[cy * MAP_W + cx] : fallback;
+        pix[row + x] = shade(tex.data[t * TEX + s], f);
         fx += stepX;
         fy += stepY;
       }
+    };
+    for (let y = 0; y < h; y++) {
+      const dy = y + 0.5 - half;
+      if (dy > 0) floorRow(y, (K * eye) / dy, this.floorCells, this.floorCells[0]);
+      else if (dy < 0) floorRow(y, (K * (CEILING_Z - eye)) / -dy, this.ceilCells, this.ceil.plain);
     }
 
     // Walls: one DDA ray per column.
@@ -167,24 +173,26 @@ export class Raycaster {
       }
       const dist = Math.max(0.0001, side === 0 ? sdx - ddx : sdy - ddy);
       const dist32 = dist;
-      const lineH = K / dist;
-      const top = half - lineH / 2;
-      const y0 = Math.max(0, Math.floor(top)), y1 = Math.min(h, Math.ceil(half + lineH / 2));
+      const unit = K / dist; // pixels per tile of height at this distance
+      const top = half - (CEILING_Z - eye) * unit, bottom = half + eye * unit;
+      const y0 = Math.max(0, Math.floor(top)), y1 = Math.min(h, Math.ceil(bottom));
 
       let wallX = side === 0 ? py + dist * rdy : px + dist * rdx;
       wallX -= Math.floor(wallX);
       let tx = Math.floor(wallX * TEX);
       if ((side === 0 && rdx > 0) || (side === 1 && rdy < 0)) tx = TEX - 1 - tx;
 
+      // The wall's own picture covers its first tile of height; above that, up to the ceiling, it is plain wall.
       const tex = this.walls[tile] ?? this.walls['#'];
+      const plain = this.walls['#'];
       const f = fog(dist) * (side === 1 ? 0.82 : 1);
-      const step = TEX / lineH;
-      let tpos = (y0 - top) * step;
       for (let y = y0; y < y1; y++) {
-        const ty = Math.min(TEX - 1, tpos | 0);
-        pix[y * w + x] = shade(tex.data[ty * TEX + tx], f);
+        const z = eye + (half - (y + 0.5)) / unit; // height on the wall at this pixel
+        const t = z <= 1 ? tex : plain;
+        const v = z <= 1 ? 1 - z : 1 - (z - 1 - Math.floor(z - 1));
+        const ty = Math.min(TEX - 1, Math.max(0, (v * TEX) | 0));
+        pix[y * w + x] = shade(t.data[ty * TEX + tx], f);
         depth[y * w + x] = dist32;
-        tpos += step;
       }
     }
 
@@ -196,9 +204,9 @@ export class Raycaster {
       const range = m.minor ? MINOR_RANGE : FURNITURE_RANGE;
       if (dx * dx + dy * dy > range * range) continue;
       if (cam.invDet * (-cam.planeY * dx + cam.planeX * dy) < -2) continue; // well behind us
-      for (const face of visibleFaces(m.faces, px, py, EYE_Z)) {
+      for (const face of visibleFaces(m.faces, px, py, eye)) {
         const tex = this.mats[face.mat] ?? viewTexture(face.mat, now) ?? (isStyleMat(face.mat) ? materialFor(face.mat) : null);
-        if (tex) fillFace(target, face, cam, K, half, tex); // a custom sheet that is still loading has no texture yet
+        if (tex) fillFace(target, face, cam, K, half, tex, eye); // a custom sheet that is still loading has no texture yet
       }
     }
 
@@ -221,7 +229,7 @@ export class Raycaster {
       const screenX = (w / 2) * (1 + tX / tY);
       const unit = K / tY;
       const sw = s.art.w * unit, sh = s.art.h * unit;
-      const bottom = half + unit / 2;
+      const bottom = half + unit * (eye - hopHeight(s.player?.jumpAt, now)); // feet on the floor, or in the air mid-jump
       const top = bottom - sh;
       const left = screenX - sw / 2;
       const x0 = Math.max(0, Math.floor(left)), x1 = Math.min(w, Math.ceil(left + sw));
@@ -253,7 +261,7 @@ export class Raycaster {
       const screenX = (w / 2) * (1 + tX / tY);
       const cx = Math.round(screenX);
       // Float just above the desk top: x is the screen column, y the height above the floor point.
-      const ly = half + K / tY / 2 - (K / tY) * 0.9;
+      const ly = half + (K / tY) * (eye - 0.9);
       const row = Math.min(h - 1, Math.max(0, Math.round(ly)));
       // Off screen, or hidden behind a wall (the desk's own faces are within half a tile of its marker).
       if (cx < 0 || cx >= w || tY > depth[row * w + cx] + 0.6) continue;

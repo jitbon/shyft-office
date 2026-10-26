@@ -25,10 +25,10 @@ export function shade(c: number, f: number) {
 export const fog = (d: number) => Math.max(0.35, 1 / (1 + d * d * 0.01));
 
 /**
- * `K` is the number of pixels one world unit covers at distance 1, and `half` the row of the horizon; both come from the
- * camera setup of the view. Faces nearer than what is already drawn replace it; farther ones are left.
+ * `K` is the number of pixels one world unit covers at distance 1, `half` the row of the horizon, and `eye` the height of the eye
+ * above the floor (it rises during a jump); all come from the camera setup of the view. Faces nearer than what is already drawn replace it; farther ones are left.
  */
-export function fillFace(t: Target, face: Face, cam: Cam, K: number, half: number, tex: Texture) {
+export function fillFace(t: Target, face: Face, cam: Cam, K: number, half: number, tex: Texture, eye = 0.5) {
   const { w, h, pix, depth } = t;
   const poly = clipNear(face.pts.map((p, i) => toCamera(cam, p, face.uv[i][0], face.uv[i][1])), NEAR);
   const n = poly.length;
@@ -40,7 +40,7 @@ export function fillFace(t: Target, face: Face, cam: Cam, K: number, half: numbe
     const inv = 1 / p.ty;
     iw[i] = inv;
     sx[i] = (w / 2) * (1 + p.tx * inv);
-    sy[i] = half + K * inv * (0.5 - p.z);
+    sy[i] = half + K * inv * (eye - p.z);
     uw[i] = p.u * inv;
     vw[i] = p.v * inv;
     if (sy[i] < minY) minY = sy[i];

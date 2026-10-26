@@ -24,6 +24,8 @@ export interface Player {
   status: PlayerStatus;
   animT: number;
   bubble?: { text: string; until: number };
+  /** When this person last jumped (ms, `Date.now()` clock); they are in the air for a moment after it. */
+  jumpAt?: number;
 }
 
 export const STATUS_COLORS: Record<PlayerStatus['kind'], string> = {

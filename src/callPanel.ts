@@ -1,3 +1,4 @@
+import { icon } from './icons';
 /** One person in the conversation panel. */
 export interface TileInfo {
   id: string;
@@ -18,6 +19,8 @@ interface Tile {
   video: HTMLVideoElement;
   avatar: HTMLElement;
   who: HTMLElement;
+  /** Your own tile only: the mic and camera buttons. */
+  controls?: { mic: HTMLButtonElement; cam: HTMLButtonElement };
   /** The picture currently drawn in `avatar`, so a changed character is noticed. */
   drawn?: HTMLCanvasElement;
 }
@@ -27,20 +30,24 @@ export class CallPanel {
   private tiles = new Map<string, Tile>();
   private head = document.createElement('div');
 
-  constructor(private root: HTMLElement) {
+  /** `onToggle` is what the mic and camera buttons on your own tile do (the same as the toolbar buttons). */
+  constructor(private root: HTMLElement, private onToggle: (which: 'mic' | 'cam') => void = () => {}) {
     this.head.className = 'head';
   }
 
-  /** Pass `label: null` when the player is not in a conversation. */
-  render(label: string | null, tiles: TileInfo[], full: boolean) {
+  /**
+   * Pass `label: null` when there is nothing to show. `kind` is 'desk' for the view at your own desk (no "conversation is full"
+   * text) and 'conversation' otherwise.
+   */
+  render(label: string | null, tiles: TileInfo[], full: boolean, kind: 'desk' | 'conversation' = 'conversation') {
     this.root.hidden = label === null;
     if (label === null) {
       this.tiles.forEach((t) => t.el.remove());
       this.tiles.clear();
       return;
     }
-    this.head.textContent = full ? `${label} · conversation is full` : `${label} · ${tiles.length}`;
-    this.head.classList.toggle('full', full);
+    this.head.textContent = kind === 'desk' ? label : full ? `${label} · conversation is full` : `${label} · ${tiles.length}`;
+    this.head.classList.toggle('full', full && kind !== 'desk');
     this.root.prepend(this.head);
 
     const live = new Set(tiles.map((t) => t.id));
@@ -73,7 +80,27 @@ export class CallPanel {
     const who = document.createElement('div');
     who.className = 'who';
     el.append(avatar, video, who);
-    return { el, video, avatar, who };
+    if (!info.self) return { el, video, avatar, who };
+    // Your own tile carries the mic and camera buttons, like the controls on a tile in a video call.
+    const button = (which: 'mic' | 'cam', label: string) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `tilebtn ${which}`;
+      b.innerHTML = icon(which);
+      b.setAttribute('aria-label', label);
+      b.title = which === 'mic' ? 'Microphone (M)' : 'Camera (C)';
+      b.onclick = () => {
+        this.onToggle(which);
+        b.blur();
+      };
+      return b;
+    };
+    const controls = { mic: button('mic', 'Mic'), cam: button('cam', 'Cam') };
+    const bar = document.createElement('div');
+    bar.className = 'tilebar';
+    bar.append(controls.mic, controls.cam);
+    el.append(bar);
+    return { el, video, avatar, who, controls };
   }
 
   private update(tile: Tile, info: TileInfo) {
@@ -93,6 +120,8 @@ export class CallPanel {
       tile.avatar.replaceChildren(c);
       tile.drawn = info.avatar;
     }
+    tile.controls?.mic.classList.toggle('off', !info.mic);
+    tile.controls?.cam.classList.toggle('off', !info.cam);
     tile.who.textContent = `${info.mic ? '' : '🔇 '}${info.name}${info.self ? ' (you)' : ''}`;
   }
 }

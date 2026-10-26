@@ -20,6 +20,7 @@ import { ObjectsStore } from './objects';
 import { Helper, type Drafter } from './helper';
 import { ItemsStore } from './items';
 import { pinnedVersions } from '../shared/items-edit';
+import { JUMP_COOLDOWN_MS } from '../shared/jump';
 import { LinkEngine } from './links';
 import { OfficeState } from './office';
 import { loadSprites, noSprites, validateAvatarChoice } from './sprites';
@@ -183,6 +184,9 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     const c = byId.get(id);
     if (c) send(c.ws, msg);
   };
+  /** When each player last jumped, to keep jumps to one at a time. */
+  const lastJump = new Map<string, number>();
+
   function broadcast(msg: ServerMsg, except?: WebSocket) {
     const data = JSON.stringify(msg);
     for (const ws of conns.keys()) {
@@ -426,6 +430,12 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (office.afterMove(me)) broadcastOffice(); // leaving your desk unlocks it
       broadcast({ t: 'state', id: me.id, x: me.x, y: me.y, a: me.a, mode: me.mode, moving: me.moving }, ws);
       links.update();
+    } else if (msg.t === 'jump') {
+      // Only for show, but still limited: one jump at a time per person, told to everyone who is sent their moves.
+      const now = Date.now();
+      if (now - (lastJump.get(me.id) ?? 0) < JUMP_COOLDOWN_MS - 50) return;
+      lastJump.set(me.id, now);
+      broadcast({ t: 'jump', id: me.id }, ws);
     } else if (msg.t === 'desk') {
       const fail = (error: string) => send(ws, { t: 'notify', kind: 'error', text: error });
       if (msg.op === 'claim') {
@@ -629,6 +639,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (!c) return;
     conns.delete(ws);
     byId.delete(c.p.id);
+    lastJump.delete(c.p.id);
     sessions.delete(c.session);
     links.remove(c.p.id);
     for (const key of [...rings.keys(), ...lastWave.keys()]) {

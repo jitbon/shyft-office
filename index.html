@@ -14,23 +14,29 @@
     <div id="hud" hidden>
       <div id="zone" class="panel" hidden></div>
       <div id="people" class="panel"></div>
-      <div id="modes" class="panel">
-        <button data-mode="2d">2D</button>
-        <button data-mode="3d">1st person</button>
-        <button id="micBtn" class="off" title="Microphone (M)">Mic</button>
-        <button id="camBtn" class="off" title="Camera (C)">Cam</button>
-        <button id="deskBtn" title="Go to your desk, or claim one (G)">Desk</button>
-        <button id="buildBtn" title="Rearrange the office (B)" hidden>Build</button>
-        <button id="characterBtn" title="Change your character">Character</button>
-        <button id="statusBtn" title="Set your status (Ctrl+U toggles Do Not Disturb)">Status</button>
-        <button id="adminBtn" title="Office admin" hidden>Admin</button>
+      <div id="topright">
+        <div id="modes" class="pill">
+          <button id="micBtn" class="icon off" title="Microphone (M)" aria-label="Microphone"></button>
+          <button id="camBtn" class="icon off" title="Camera (C)" aria-label="Camera"></button>
+          <span class="sep"></span>
+          <button id="deskBtn" title="Go to your desk, or claim one (G)">Desk</button>
+          <button id="characterBtn" title="Change your character">Character</button>
+          <button id="statusBtn" title="Your status: hover to change it (Ctrl+U toggles Do Not Disturb)">Status</button>
+          <button id="adminBtn" title="Office admin" hidden>Admin</button>
+        </div>
+        <div id="viewToggle" class="pill" role="group" aria-label="View">
+          <button data-mode="2d" title="Top-down view (Tab)">2D</button>
+          <button data-mode="3d" title="First-person view (Tab)">3D</button>
+        </div>
       </div>
+      <button id="buildBtn" class="float" title="Rearrange the office (B)" hidden></button>
       <div id="builderPanel" class="panel" hidden></div>
       <div id="adminPanel" class="panel" hidden></div>
       <div id="statusPanel" class="panel" hidden></div>
       <div id="areaBanner" class="panel" hidden></div>
       <div id="deskCard" class="panel" hidden></div>
       <div id="deskHint" class="panel" hidden></div>
+      <div id="deskCue" class="panel" hidden></div>
       <div id="notices"></div>
       <div id="callPanel" class="panel" hidden></div>
       <div id="chat" class="panel">

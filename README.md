@@ -32,6 +32,11 @@ other than localhost the browser will not allow the camera, though chat and walk
 - **Desks.** The open office has 12 desks in three pods of four, two desks facing two. Click a desk to claim it (or press the **Desk** button). **G** walks you back to your desk. You can
   **lock** your desk (only people you invite can join) and **invite** someone. By default you faintly overhear
   neighbours at nearby desks; an admin can switch a pod to *cubicle* mode, where each desk is private.
+- **At your desk.** Step onto a desk space (a 3×3 block: the 3-tile desk, the chair in the middle of the next row, and the floor behind it) and it lights up with a
+  strong glow and an edge in the top-down view (a "Your desk" tag too, on your own, in both views). Stay there a second and the voice and
+  video view opens with your own tile and mic and camera buttons, headed "Your desk", "<name>'s desk" or "Free desk", even if you are alone, like Gather's desks; walk off and it
+  closes. The same one-tile view opens when you walk alone into a meeting room (headed with the room's name). Anyone invited into a locked desk appears as a tile. Your mic and camera stay off until you turn them on. Switch the
+  automatic opening off in the Desk card ("Show my video view when I'm at a desk or in a meeting room"); it is remembered on that device.
 - **Status.** Click **Status** for Available, Busy or Do Not Disturb, with an optional note and time limit.
   **Ctrl+U** (**⌘+U** on a Mac) toggles Do Not Disturb: nobody can start a conversation with you, and your mic and
   camera stay off. People can still **ring** you (accept and you land next to them) or **wave**: use the buttons
@@ -46,6 +51,7 @@ other than localhost the browser will not allow the camera, though chat and walk
 | Move | WASD / arrows | W/S forward/back, A/D strafe |
 | Look | n/a | mouse (click to lock), ←/→, Q/E |
 | Run | Shift | Shift |
+| Jump | Space | Space |
 | Switch view | Tab or V | Tab or V |
 | Chat | Enter (to *Nearby* or the whole office) | Enter |
 | Mic / camera | M / C | M / C |

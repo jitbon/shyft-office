@@ -122,6 +122,8 @@ export type ClientMsg =
   | { t: 'ring'; to: string }
   | { t: 'ringReply'; from: string; accept: boolean }
   | { t: 'wave'; to: string; reply?: boolean }
+  /** A jump: only for show (it changes no position and no rule). */
+  | { t: 'jump' }
   | ({ t: 'admin' } & AdminOp);
 
 export type ServerMsg =
@@ -151,6 +153,8 @@ export type ServerMsg =
   | { t: 'join'; player: PlayerState }
   | { t: 'leave'; id: string }
   | ({ t: 'state'; id: string } & Pose)
+  /** Someone jumped; draw them rising and falling for a moment. */
+  | { t: 'jump'; id: string }
   | { t: 'chat'; id: string; name: string; text: string; zone: string | null; scope?: ChatScope }
   | { t: 'links'; links: Link[]; conversation: ConversationInfo | null; full?: boolean }
   | { t: 'rtc'; from: string; data: unknown }
