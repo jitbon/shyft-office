@@ -1,4 +1,4 @@
-import type { ConversationInfo, Link, PlayerState, ServerMsg } from '../shared/protocol';
+import type { ConversationInfo, Link, PlayerState, ServerMsg, ShareInfo } from '../shared/protocol';
 import { computeLinks, pairKey, prevFrom, type LinkResult, type OfficeInput } from '../shared/proximity';
 
 const EMPTY = JSON.stringify({ links: [], conversation: null, full: false });
@@ -56,6 +56,8 @@ export class LinkEngine {
     private opts: { maxOpen?: number } = {},
     /** Desk locks and pod modes, as of now. */
     private office: () => OfficeInput = () => ({}),
+    /** The running screen shares of these players, oldest first. */
+    private shares: (members: string[]) => ShareInfo[] = () => [],
   ) {}
 
   start(tickMs: number) {
@@ -118,6 +120,7 @@ export class LinkEngine {
       }
       links.sort((x, y) => (x.peer < y.peer ? -1 : x.peer > y.peer ? 1 : 0));
       const conv = this.result.conversations.find((c) => c.members.includes(p.id));
+      const shares = conv ? this.shares(conv.members) : [];
       const conversation: ConversationInfo | null = conv
         ? {
             id: conv.id,
@@ -127,6 +130,7 @@ export class LinkEngine {
             ...(conv.context.startsWith('area:') && conv.members.length > VIDEO_THRESHOLD
               ? { video: pickVideo(conv.members, this.speaking, this.spokeAt) }
               : {}),
+            ...(shares.length ? { shares } : {}),
           }
         : null;
       const full = this.result.overflow.has(p.id);

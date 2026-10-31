@@ -52,6 +52,20 @@ export interface ConversationInfo {
   label: string;
   /** Present only for area meetings above the open-area cap: who may send video, most recent speaker first. */
   video?: string[];
+  /** Members' running screen shares, oldest first. Omitted when there are none. */
+  shares?: ShareInfo[];
+}
+
+/** A running screen share, as the members of its conversation see it. */
+export interface ShareInfo {
+  shareId: string;
+  sharer: string;
+  startedAt: number;
+  /** The share carries sound. */
+  audio: boolean;
+  /** The picture's size in pixels. */
+  w: number;
+  h: number;
 }
 
 export interface SpriteInfo {
@@ -124,6 +138,9 @@ export type ClientMsg =
   | { t: 'wave'; to: string; reply?: boolean }
   /** A jump: only for show (it changes no position and no rule). */
   | { t: 'jump' }
+  /** Start sharing the screen, or (while sharing) update its size or sound; `on: false` stops. */
+  | { t: 'share'; on: true; audio: boolean; w: number; h: number }
+  | { t: 'share'; on: false }
   | ({ t: 'admin' } & AdminOp);
 
 export type ServerMsg =
@@ -158,6 +175,8 @@ export type ServerMsg =
   | { t: 'chat'; id: string; name: string; text: string; zone: string | null; scope?: ChatScope }
   | { t: 'links'; links: Link[]; conversation: ConversationInfo | null; full?: boolean }
   | { t: 'rtc'; from: string; data: unknown }
+  /** Sent only to the sharer: the share started, or why it is not running. */
+  | { t: 'shareState'; on: boolean; shareId?: string; reason?: 'full' | 'dnd' | 'left' | 'stopped' }
   | {
       t: 'presence';
       id: string;

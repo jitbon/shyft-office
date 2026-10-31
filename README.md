@@ -37,6 +37,12 @@ other than localhost the browser will not allow the camera, though chat and walk
   video view opens with your own tile and mic and camera buttons, headed "Your desk", "<name>'s desk" or "Free desk", even if you are alone, like Gather's desks; walk off and it
   closes. The same one-tile view opens when you walk alone into a meeting room (headed with the room's name). Anyone invited into a locked desk appears as a tile. Your mic and camera stay off until you turn them on. Switch the
   automatic opening off in the Desk card ("Show my video view when I'm at a desk or in a meeting room"); it is remembered on that device.
+- **Screen sharing.** In a conversation, at a desk or in a meeting room, press **Share screen** in the call panel and pick a
+  screen, window or tab. Everyone in the same conversation sees it large above the tiles (up to three people can share at
+  once; the newest is large and the others are thumbnails you can click). It goes only where your camera goes: a meeting
+  room, locked desk or overheard pod neighbour never sees it. It stops with **Stop sharing**, the browser's own stop bar, or
+  when you leave the conversation or turn on Do Not Disturb. **Full window** fills the browser window. Sharing a Chrome tab
+  can include its sound, with its own mute and volume for each viewer. It needs a secure (https or localhost) address.
 - **Status.** Click **Status** for Available, Busy or Do Not Disturb, with an optional note and time limit.
   **Ctrl+U** (**⌘+U** on a Mac) toggles Do Not Disturb: nobody can start a conversation with you, and your mic and
   camera stay off. People can still **ring** you (accept and you land next to them) or **wave**: use the buttons
@@ -192,6 +198,6 @@ as observed in its shipped web client) and `quickstart.md` (how to try each feat
 ## Ideas for next steps
 
 - Sign-in, so desks and admin rights belong to people rather than browsers.
-- A media server for large meetings; screen sharing; recording.
+- A media server for large meetings; recording; drawing on a shared screen.
 - A map editor / Tiled import, multiple floors.
 - Animated and moving objects, and full 3D.

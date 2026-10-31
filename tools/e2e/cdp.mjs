@@ -8,10 +8,10 @@ import WebSocket from 'ws';
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
-export async function launch({ port = 9341, dpr = 1, width = 1280, height = 800 } = {}) {
+export async function launch({ port = 9341, dpr = 1, width = 1280, height = 800, args = [] } = {}) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'shyft-chrome-'));
   const proc = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run',
-    '--autoplay-policy=no-user-gesture-required', `--window-size=${width},${height}`, 'about:blank'], { stdio: 'ignore', detached: true });
+    '--autoplay-policy=no-user-gesture-required', `--window-size=${width},${height}`, ...args, 'about:blank'], { stdio: 'ignore', detached: true });
   for (let i = 0; i < 60; i++) {
     try { await fetch(`http://localhost:${port}/json/version`); break; } catch { await sleep(200); }
   }

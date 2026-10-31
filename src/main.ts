@@ -9,7 +9,8 @@ import { loadAvatar, makeAvatar } from './art';
 import { Builder } from './builder/builder';
 import { CallPanel, type TileInfo } from './callPanel';
 import { changeCharacter, getMemberId, showJoinScreen } from './join';
-import { MeshTransport } from './media';
+import { MeshTransport, shareScreen } from './media';
+import { ShareStage, stagePlan, type StageItem } from './shareStage';
 import {
   areaLabel, blocked, closeDeskCard, deskTitle, showDeskCue, notice, deskCardOpen, deskMarkers, deskTags, facedDesk, initOfficeUi, onNotify,
   onSprites, onWelcome, openDeskCard, predictEntry, setAdminState, setBuilding, setOffice, showDeskHint, updateArea, walkToMyDesk,
@@ -48,7 +49,8 @@ const raycaster = new Raycaster();
 const buildBtn = $<HTMLButtonElement>('buildBtn');
 const net = new Net();
 const media = new MeshTransport();
-const callPanel = new CallPanel($('callPanel'), (which) => toggleDevice(which));
+const callPanel = new CallPanel($('callPanel'), (which) => toggleDevice(which), () => toggleShare());
+const shareStage = new ShareStage($('shareStage'));
 const studio = new Studio({
   notice: (text) => notice(text, { key: 'studio', ttlMs: 3000 }),
   onItemChanged: (id) => builder.itemSaved(id),
@@ -177,10 +179,22 @@ window.addEventListener('keydown', (e) => {
   }
   if (mode === '2d' && (e.key === '+' || e.key === '=')) zoom = stepZoom(zoom, 1, dpr);
   if (mode === '2d' && (e.key === '-' || e.key === '_')) zoom = stepZoom(zoom, -1, dpr);
+  // A key pressed with ⌘, Ctrl or Alt is a shortcut (⌘+D, Ctrl+S…), not a step: on a Mac its keyup never comes, so it would stick.
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
   keys.add(e.code);
 });
-window.addEventListener('keyup', (e) => keys.delete(e.code));
+window.addEventListener('keyup', (e) => {
+  keys.delete(e.code);
+  // macOS sends no keyup for other keys released while ⌘ is down, so anything held then may never be let go of.
+  if (e.key === 'Meta') keys.clear();
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Meta') keys.clear(); // the same: stop walking rather than walk on forever
+});
 window.addEventListener('blur', () => keys.clear());
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) keys.clear();
+});
 
 canvas.addEventListener('wheel', (e) => {
   if (mode !== '2d') return;
@@ -401,6 +415,7 @@ function selfTile(): TileInfo {
 }
 
 function refreshCallPanel() {
+  refreshShare();
   const plan = panelPlan({ conversation: conversation ? conversation.label : null, deskConversation: !!conversation?.context.startsWith('desk:'), desk: deskView ? deskTitle(deskView) : null, room: roomView });
   if (plan.kind === 'none') {
     callPanel.render(null, [], false);
@@ -427,9 +442,102 @@ function refreshCallPanel() {
       stream: self ? media.localVideo() : streams.get(p.id) ?? null,
       self,
       talking: self ? media.selfTalking() : talking.has(p.id),
+      sharing: conversation.shares?.some((sh) => sh.sharer === p.id),
     });
   }
   callPanel.render(plan.heading, tiles, convFull, 'conversation');
+}
+
+// ------------------------------------------------------------------ screen sharing
+
+type ShareStatus = 'idle' | 'picking' | 'sharing';
+let shareStatus: ShareStatus = 'idle';
+/** Stop messages sent whose `shareState` reply has not come yet. */
+let stopsAwaited = 0;
+/** The share this viewer clicked to watch large (in memory only). */
+let pickedShare: string | null = null;
+let seenShares: string[] = [];
+let sizeTimer = 0;
+const MAX_SHARES_NOTE = 'Sharing is full here (3 people are sharing)';
+
+function toggleShare() {
+  if (shareStatus === 'sharing') endShare();
+  else if (shareStatus === 'idle') void startShare();
+}
+
+async function startShare() {
+  shareStatus = 'picking';
+  refreshCallPanel();
+  // getDisplayMedia is called inside the click's own turn: the browser wants a user gesture.
+  const r = await shareScreen();
+  if (!r.ok) {
+    shareStatus = 'idle';
+    if (r.error === 'os') {
+      notice('Your computer is blocking screen sharing. Allow screen recording for your browser in your system settings, then try again.', { key: 'share', ttlMs: 12_000 });
+    }
+    refreshCallPanel();
+    return;
+  }
+  r.video.onended = () => endShare(); // the browser's own Stop sharing bar
+  media.setScreen(r.video, r.audio);
+  net.send({ t: 'share', on: true, audio: !!r.audio, w: r.w, h: r.h });
+  let sent = { w: r.w, h: r.h };
+  clearInterval(sizeTimer);
+  sizeTimer = window.setInterval(() => {
+    const { width, height } = r.video.getSettings();
+    if (!width || !height || (width === sent.w && height === sent.h)) return;
+    sent = { w: width, h: height };
+    net.send({ t: 'share', on: true, audio: !!r.audio, w: width, h: height });
+  }, 1000);
+  // The button turns into Stop sharing when the server confirms (shareState).
+}
+
+function endShare() {
+  net.send({ t: 'share', on: false });
+  stopsAwaited++;
+  stopShareLocally();
+}
+
+/** Stops the capture and clears the screen slots. Safe to call more than once. */
+function stopShareLocally() {
+  clearInterval(sizeTimer);
+  sizeTimer = 0;
+  media.setScreen(null, null);
+  shareStatus = 'idle';
+  refreshCallPanel();
+}
+
+const SHARE_ENDED: Record<string, string> = {
+  left: 'Screen sharing stopped because you left the conversation.',
+  dnd: 'Screen sharing stopped: Do Not Disturb is on.',
+  full: '3 people are already sharing here.',
+};
+
+/** The Share screen button, the banner and the viewers' stage, as of now. */
+function refreshShare() {
+  const shares = conversation?.shares ?? [];
+  let control: 'idle' | 'picking' | 'sharing' | { unavailable: string } = shareStatus;
+  if (shareStatus === 'idle') {
+    if (!window.isSecureContext) control = { unavailable: 'Screen sharing needs a secure (https) address' };
+    else if (!navigator.mediaDevices?.getDisplayMedia) control = { unavailable: "Your browser can't share screens" };
+    else if (shares.length >= 3) control = { unavailable: MAX_SHARES_NOTE };
+  }
+  callPanel.setShareControl(control);
+  callPanel.setSharingBanner(shareStatus === 'sharing' ? media.localScreen() : null, !conversation || conversation.members.length < 2);
+
+  const plan = stagePlan({ shares, selfId: me.id, picked: pickedShare }, seenShares);
+  pickedShare = plan.picked;
+  seenShares = shares.map((sh) => sh.shareId);
+  const screens = media.screens();
+  const item = (id: string | null): StageItem | null => {
+    const sh = shares.find((x) => x.shareId === id);
+    return sh ? { shareId: sh.shareId, sharer: sh.sharer, name: others.get(sh.sharer)?.name ?? 'Someone', stream: screens.get(sh.sharer) ?? null, audio: sh.audio } : null;
+  };
+  shareStage.render({
+    large: item(plan.large),
+    thumbs: plan.thumbs.map(item).filter((x): x is StageItem => !!x),
+    started: plan.started.filter((id) => id !== plan.large).map((id) => item(id)?.name ?? 'Someone'),
+  });
 }
 
 function setMode(next: ViewMode) {
@@ -543,6 +651,21 @@ function onMessage(msg: ServerMsg) {
     }
     case 'rtc':
       void media.onSignal(msg.from, msg.data);
+      break;
+    case 'shareState':
+      if (msg.on) {
+        // A late reply, after you pressed Stop, must not bring the banner back.
+        if (shareStatus !== 'idle') shareStatus = 'sharing';
+        refreshCallPanel();
+      } else if (msg.reason === 'stopped' && stopsAwaited > 0) {
+        // The answer to our own Stop. If Share screen was pressed again before it came, that newer capture must survive.
+        stopsAwaited--;
+        if (shareStatus === 'idle') refreshCallPanel();
+      } else {
+        stopShareLocally();
+        const text = msg.reason && SHARE_ENDED[msg.reason];
+        if (text) notice(text, { key: 'share', ttlMs: 6000 });
+      }
       break;
     case 'notify':
       if (!handleSocialNotify(msg)) onNotify(msg);
@@ -905,6 +1028,8 @@ async function start() {
       links = [];
       conversation = null;
       convFull = false;
+      stopsAwaited = 0;
+      if (shareStatus !== 'idle') stopShareLocally(); // the server dropped the share with the connection
       media.setLinks([], me.id);
       updateChatScope();
       refreshCallPanel();
@@ -914,6 +1039,13 @@ async function start() {
   const admin = new URLSearchParams(location.search).get('admin') ?? undefined;
   media.onSignalOut = (to, data) => net.send({ t: 'rtc', to, data });
   media.onChange = refreshCallPanel;
+  shareStage.onPick = (id) => {
+    pickedShare = id;
+    refreshCallPanel();
+  };
+  shareStage.onScreenVolume = (sharer, value) => media.setScreenGain(sharer, value);
+  // Clicking the call panel frees the mouse in first person, so the buttons and the stage can be used.
+  $('callPanel').addEventListener('pointerdown', () => document.exitPointerLock());
   media.onDeviceLost = onDeviceLost;
   media.onSpeaking = (speaking) => {
     speakingWanted = speaking;

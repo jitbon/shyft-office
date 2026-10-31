@@ -56,8 +56,18 @@ describe('proximity links', () => {
     const a = await join('A3');
     const b = await join('B3', 17.5);
     await a.untilLinks((l) => l.some((x) => x.peer === b.id));
-    a.send({ t: 'rtc', to: b.id, data: { sdp: 'x'.repeat(20 * 1024) } });
+    a.send({ t: 'rtc', to: b.id, data: { sdp: 'x'.repeat(50 * 1024) } });
     expect(await b.quiet('rtc', 300)).toHaveLength(0);
+  });
+
+  it('relays at most 200 call-setup messages per second from one connection', async () => {
+    const a = await join('A3r');
+    const b = await join('B3r', 17.5);
+    await a.untilLinks((l) => l.some((x) => x.peer === b.id));
+    for (let i = 0; i < 260; i++) a.send({ t: 'rtc', to: b.id, data: { i } });
+    await b.quiet('rtc', 400);
+    expect(b.all('rtc').length).toBeGreaterThan(0);
+    expect(b.all('rtc').length).toBeLessThanOrEqual(200);
   });
 
   it('puts a third player who walks into range of either participant in the same conversation', async () => {

@@ -13,6 +13,7 @@ import { compileWorld } from '../shared/world';
 import type { ClientMsg, ItemInfo, Look, PlayerState, ServerMsg } from '../shared/protocol';
 import { isMemberId, isUuid } from '../shared/member';
 import { positionContext } from '../shared/proximity';
+import { shareKeeps, validateShareMsg, type SharePlace } from '../shared/screen-share';
 import { cleanStatus, expireStatus } from '../shared/status';
 import { handleApi, type ApiContext } from './api';
 import { LayoutStore } from './layout-store';
@@ -22,6 +23,7 @@ import { ItemsStore } from './items';
 import { pinnedVersions } from '../shared/items-edit';
 import { JUMP_COOLDOWN_MS } from '../shared/jump';
 import { LinkEngine } from './links';
+import { ShareRegistry } from './shares';
 import { OfficeState } from './office';
 import { loadSprites, noSprites, validateAvatarChoice } from './sprites';
 import { StateStore, loadState } from './store';
@@ -73,8 +75,18 @@ const MIME: Record<string, string> = {
 };
 
 const HEX = /^#[0-9a-f]{6}$/i;
-/** Call-setup frames bigger than this are dropped (SDP is a few KB). */
-const MAX_RTC_BYTES = 16 * 1024;
+/**
+ * Call-setup frames bigger than this are dropped. With the voice, camera and screen slots one SDP is about 16 KB in Chrome,
+ * and about 26 KB when both sides offer at once, so the limit leaves room (the socket's own limit is 64 KB).
+ */
+/**
+ * One call-setup message may be this big: a Chrome offer with four media slots is about 16 KB, and 26 KB when both sides offer.
+ * With the socket's own 64 KB limit this bounds what one connection can make the server relay.
+ */
+const MAX_RTC_BYTES = 48 * 1024;
+/** Call setup per connection in any one second: a full meeting sends a burst of offers and candidates, nothing like this much. */
+const MAX_RTC_PER_SECOND = 200;
+const MAX_RTC_BYTES_PER_SECOND = 1024 * 1024;
 
 const cleanColor = (c: unknown, fallback: string) => (typeof c === 'string' && HEX.test(c) ? c : fallback);
 const cleanLook = (l: Partial<Look> | undefined): Look => ({
@@ -186,6 +198,9 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
   };
   /** When each player last jumped, to keep jumps to one at a time. */
   const lastJump = new Map<string, number>();
+  /** When each connection last sent a `share` message, to keep it to four a second. */
+  const shareTimes = new Map<string, number[]>();
+  const rtcRecent = new Map<string, { at: number; bytes: number }[]>();
 
   function broadcast(msg: ServerMsg, except?: WebSocket) {
     const data = JSON.stringify(msg);
@@ -260,7 +275,25 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     publishCooldownMs: opts.publishCooldownMs ?? 2000,
     draftCooldownMs: opts.draftCooldownMs ?? 500,
   };
-  const links = new LinkEngine(() => [...conns.values()].map((c) => c.p), sendTo, {}, () => office.linkInput());
+  const shares = new ShareRegistry();
+  const links = new LinkEngine(
+    () => [...conns.values()].map((c) => c.p),
+    sendTo,
+    {},
+    () => office.linkInput(),
+    (members) => shares.sharesOf(members),
+  );
+  /** Where a player stands for the screen-share rules, or null once they are gone. */
+  const placeOf = (id: string): SharePlace | null => {
+    const p = byId.get(id)?.p;
+    if (!p) return null;
+    return {
+      context: positionContext(p.x, p.y, p.id, office.linkInput()),
+      inConversation: links.conversationMembers(p.id).length > 0,
+      atDesk: deskAt(p.x, p.y) !== null,
+      dnd: p.status.kind === 'dnd',
+    };
+  };
   // A status with a time limit goes back to available when it runs out.
   links.beforeUpdate = () => {
     const now = Date.now();
@@ -271,6 +304,8 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       broadcast({ t: 'presence', id: c.p.id, status: next });
       if (office.deskOf(c.p.memberId)) broadcastOffice();
     }
+    // A share ends when its sharer's place no longer keeps it; only the sharer is told.
+    for (const { sharer, reason } of shares.sweep(placeOf)) sendTo(sharer, { t: 'shareState', on: false, reason });
   };
   links.start(opts.tickMs ?? 200);
   /** Rings waiting for an answer, keyed `<ringer>><recipient>`, and when each was last sent. */
@@ -584,6 +619,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         me.mic = false;
         me.cam = false;
         broadcast({ t: 'presence', id: me.id, mic: false, cam: false });
+        if (shares.stop(me.id)) send(ws, { t: 'shareState', on: false, reason: 'dnd' });
       }
       broadcast({ t: 'presence', id: me.id, status: next });
       if (office.deskOf(me.memberId)) broadcastOffice();
@@ -626,9 +662,38 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     } else if (msg.t === 'avatar') {
       me.avatar = validateAvatarChoice(msg.avatar, sprites.index, me.look);
       broadcast({ t: 'presence', id: me.id, avatar: me.avatar }); // the sender too, in case we corrected it
+    } else if (msg.t === 'share') {
+      const now = Date.now();
+      const recent = (shareTimes.get(me.id) ?? []).filter((t) => now - t < 1000);
+      if (recent.length >= 4) return;
+      recent.push(now);
+      shareTimes.set(me.id, recent);
+      const share = validateShareMsg(msg);
+      if (!share) return;
+      if (!share.on) {
+        shares.stop(me.id);
+        send(ws, { t: 'shareState', on: false, reason: 'stopped' });
+        links.update();
+        return;
+      }
+      if (me.status.kind === 'dnd') return void send(ws, { t: 'shareState', on: false, reason: 'dnd' });
+      // A share the rules would end at the next tick (alone on the open floor, away from a desk) is not accepted at all.
+      const origin = positionContext(me.x, me.y, me.id, office.linkInput());
+      const place = placeOf(me.id);
+      if (!shares.has(me.id) && place && !shareKeeps(origin, place)) {
+        return void send(ws, { t: 'shareState', on: false, reason: 'left' });
+      }
+      const started = shares.start(me.id, share, origin, links.conversationMembers(me.id), now);
+      send(ws, started.ok ? { t: 'shareState', on: true, shareId: started.shareId } : { t: 'shareState', on: false, reason: started.reason });
+      links.update();
     } else if (msg.t === 'rtc') {
       // Call setup only travels between people who are currently linked.
       if (rawLength > MAX_RTC_BYTES) return;
+      const nowMs = Date.now();
+      const sent = (rtcRecent.get(me.id) ?? []).filter((r) => nowMs - r.at < 1000);
+      if (sent.length >= MAX_RTC_PER_SECOND || sent.reduce((n, r) => n + r.bytes, rawLength) > MAX_RTC_BYTES_PER_SECOND) return;
+      sent.push({ at: nowMs, bytes: rawLength });
+      rtcRecent.set(me.id, sent);
       if (typeof msg.to !== 'string' || !links.hasLink(me.id, msg.to)) return;
       sendTo(msg.to, { t: 'rtc', from: me.id, data: msg.data });
     }
@@ -640,6 +705,9 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     conns.delete(ws);
     byId.delete(c.p.id);
     lastJump.delete(c.p.id);
+    shareTimes.delete(c.p.id);
+    rtcRecent.delete(c.p.id);
+    shares.stop(c.p.id);
     sessions.delete(c.session);
     links.remove(c.p.id);
     for (const key of [...rings.keys(), ...lastWave.keys()]) {

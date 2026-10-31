@@ -12,13 +12,19 @@ export interface TileInfo {
   self: boolean;
   /** Their voice can be heard right now: the tile gets a green outline. */
   talking: boolean;
+  /** They are sharing their screen: the tile gets a screen mark. */
+  sharing?: boolean;
 }
+
+/** What the Share screen button shows. */
+export type ShareControl = 'idle' | 'picking' | 'sharing' | { unavailable: string };
 
 interface Tile {
   el: HTMLElement;
   video: HTMLVideoElement;
   avatar: HTMLElement;
   who: HTMLElement;
+  mark: HTMLElement;
   /** Your own tile only: the mic and camera buttons. */
   controls?: { mic: HTMLButtonElement; cam: HTMLButtonElement };
   /** The picture currently drawn in `avatar`, so a changed character is noticed. */
@@ -29,10 +35,69 @@ interface Tile {
 export class CallPanel {
   private tiles = new Map<string, Tile>();
   private head = document.createElement('div');
+  private headText = document.createElement('span');
+  private shareBtn = document.createElement('button');
+  private banner = document.createElement('div');
+  private bannerVideo = document.createElement('video');
+  private bannerNote = document.createElement('span');
 
-  /** `onToggle` is what the mic and camera buttons on your own tile do (the same as the toolbar buttons). */
-  constructor(private root: HTMLElement, private onToggle: (which: 'mic' | 'cam') => void = () => {}) {
+  /**
+   * `onToggle` is what the mic and camera buttons on your own tile do (the same as the toolbar buttons).
+   * `onShare` is what the Share screen / Stop sharing buttons do; the caller knows which one applies.
+   */
+  constructor(
+    private root: HTMLElement,
+    private onToggle: (which: 'mic' | 'cam') => void = () => {},
+    private onShare: () => void = () => {},
+  ) {
     this.head.className = 'head';
+    this.shareBtn.type = 'button';
+    this.shareBtn.className = 'sharebtn';
+    this.shareBtn.onclick = () => {
+      this.onShare();
+      this.shareBtn.blur();
+    };
+    this.head.append(this.headText, this.shareBtn);
+
+    this.banner.className = 'shareBanner';
+    this.banner.hidden = true;
+    this.bannerVideo.autoplay = true;
+    this.bannerVideo.playsInline = true;
+    this.bannerVideo.muted = true; // your own share: never played back to you
+    const text = document.createElement('div');
+    text.className = 'bannerText';
+    const title = document.createElement('strong');
+    title.textContent = 'You are sharing';
+    const stop = document.createElement('button');
+    stop.type = 'button';
+    stop.className = 'sharebtn stop';
+    stop.textContent = 'Stop sharing';
+    stop.onclick = () => {
+      this.onShare();
+      stop.blur();
+    };
+    text.append(title, this.bannerNote, stop);
+    this.banner.append(this.bannerVideo, text);
+    this.setShareControl('idle');
+  }
+
+  /** The state of the Share screen button. */
+  setShareControl(state: ShareControl) {
+    const b = this.shareBtn;
+    b.classList.toggle('stop', state === 'sharing');
+    b.disabled = state === 'picking' || typeof state === 'object';
+    b.innerHTML = '';
+    const label =
+      state === 'sharing' ? 'Stop sharing' : state === 'picking' ? 'Sharing…' : typeof state === 'object' ? 'Unavailable' : 'Share screen';
+    b.append(Object.assign(document.createElement('span'), { className: 'sharebtnIcon', innerHTML: icon(state === 'sharing' ? 'screenOff' : 'screen') }), label);
+    b.title = typeof state === 'object' ? state.unavailable : state === 'sharing' ? 'Stop sharing your screen' : 'Share your screen with the people here';
+  }
+
+  /** Shows (or, with null, hides) the "You are sharing" banner with a small preview of your own screen. */
+  setSharingBanner(stream: MediaStream | null, alone: boolean) {
+    this.banner.hidden = !stream;
+    if (this.bannerVideo.srcObject !== stream) this.bannerVideo.srcObject = stream;
+    this.bannerNote.textContent = alone ? 'No one else is here yet' : '';
   }
 
   /**
@@ -46,9 +111,10 @@ export class CallPanel {
       this.tiles.clear();
       return;
     }
-    this.head.textContent = kind === 'desk' ? label : full ? `${label} · conversation is full` : `${label} · ${tiles.length}`;
+    this.headText.textContent = kind === 'desk' ? label : full ? `${label} · conversation is full` : `${label} · ${tiles.length}`;
     this.head.classList.toggle('full', full && kind !== 'desk');
     this.root.prepend(this.head);
+    this.head.after(this.banner);
 
     const live = new Set(tiles.map((t) => t.id));
     for (const [id, t] of this.tiles) {
@@ -79,8 +145,13 @@ export class CallPanel {
     if (info.self) video.className = 'self';
     const who = document.createElement('div');
     who.className = 'who';
-    el.append(avatar, video, who);
-    if (!info.self) return { el, video, avatar, who };
+    const mark = document.createElement('span');
+    mark.className = 'sharemark';
+    mark.innerHTML = icon('screen');
+    mark.title = 'Sharing their screen';
+    mark.hidden = true;
+    el.append(avatar, video, who, mark);
+    if (!info.self) return { el, video, avatar, who, mark };
     // Your own tile carries the mic and camera buttons, like the controls on a tile in a video call.
     const button = (which: 'mic' | 'cam', label: string) => {
       const b = document.createElement('button');
@@ -100,7 +171,7 @@ export class CallPanel {
     bar.className = 'tilebar';
     bar.append(controls.mic, controls.cam);
     el.append(bar);
-    return { el, video, avatar, who, controls };
+    return { el, video, avatar, who, mark, controls };
   }
 
   private update(tile: Tile, info: TileInfo) {
@@ -120,6 +191,7 @@ export class CallPanel {
       tile.avatar.replaceChildren(c);
       tile.drawn = info.avatar;
     }
+    tile.mark.hidden = !info.sharing;
     tile.controls?.mic.classList.toggle('off', !info.mic);
     tile.controls?.cam.classList.toggle('off', !info.cam);
     tile.who.textContent = `${info.mic ? '' : '🔇 '}${info.name}${info.self ? ' (you)' : ''}`;

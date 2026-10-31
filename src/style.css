@@ -345,7 +345,7 @@ button.off { color: var(--muted); text-decoration: line-through; }
   max-width: calc(100vw - 32px);
   padding: 10px;
 }
-#callPanel .head { flex-basis: 100%; font: 800 12px/1.4 var(--font); color: var(--muted); text-align: center; }
+#callPanel .head { flex-basis: 100%; display: flex; justify-content: center; align-items: center; gap: 10px; font: 800 12px/1.4 var(--font); color: var(--muted); text-align: center; }
 #callPanel .head.full { color: var(--accent); }
 .tile {
   position: relative;
@@ -484,3 +484,43 @@ body.building #statusPanel, body.building #adminPanel, body.building #help, body
 .tile .tilebar { position: absolute; left: 0; right: 0; bottom: 18px; display: flex; justify-content: center; gap: 4px; }
 .tile .tilebtn { padding: 1px 8px; font-size: 11px; border-radius: var(--radius-pill); background: rgba(20, 22, 40, 0.8); }
 #deskCard .autoview { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); margin-top: 6px; }
+
+/* ------------------------------------------------------------ screen sharing */
+.sharebtn { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; font-size: 12px; border-radius: var(--radius-pill); }
+.sharebtn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.sharebtn .slash { display: block; }
+.sharebtn.stop { background: #c8434f; color: #fff; }
+.sharebtn:disabled { opacity: 0.45; cursor: not-allowed; }
+.sharebtnIcon { display: inline-grid; }
+.shareBanner { flex-basis: 100%; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 6px; border: 1px solid #c8434f; border-radius: var(--radius-sm); }
+.shareBanner video { width: 160px; max-height: 100px; background: #14162a; object-fit: contain; border-radius: var(--radius-sm); }
+.shareBanner .bannerText { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; font-size: 12px; }
+.shareBanner .bannerText span:empty { display: none; }
+.tile .sharemark { position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; padding: 2px; border-radius: 4px; background: rgba(10, 10, 24, 0.75); color: var(--accent); }
+.tile .sharemark[hidden] { display: none; }
+.tile .sharemark svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#shareStage { flex-basis: 100%; width: min(960px, calc(100vw - 52px)); display: flex; flex-direction: column; gap: 6px; }
+#shareStage[hidden] { display: none; }
+#shareStage .stageBar { display: flex; align-items: center; gap: 10px; font: 800 12px/1.4 var(--font); }
+#shareStage .stageLabel { flex: 1; text-align: left; }
+#shareStage .stageSound { display: inline-flex; align-items: center; gap: 6px; }
+#shareStage .stageSound[hidden] { display: none; }
+#shareStage .stagebtn { padding: 3px 10px; font-size: 12px; border-radius: var(--radius-pill); }
+#shareStage .stagebtn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#shareStage .stageFrame { position: relative; background: #0b0c18; border-radius: var(--radius-sm); overflow: hidden; height: clamp(160px, calc(70vh - 170px), 540px); }
+#shareStage .stageVideo { width: 100%; height: 100%; object-fit: contain; display: block; }
+#shareStage .stageStatus, #shareStage .stageCue { position: absolute; left: 50%; transform: translateX(-50%); padding: 4px 12px; border-radius: var(--radius-pill); background: rgba(10, 10, 24, 0.8); font: 700 13px/1.4 var(--font); }
+#shareStage .stageStatus { top: 50%; transform: translate(-50%, -50%); }
+#shareStage .stageStatus[hidden], #shareStage .stageCue[hidden] { display: none; }
+#shareStage .stageCue { top: 8px; }
+#shareStage .stageThumbs { display: flex; gap: 8px; overflow-x: auto; }
+#shareStage .stageThumbs:empty { display: none; }
+#shareStage .stageThumb { position: relative; flex: none; height: 120px; aspect-ratio: 16 / 9; padding: 0; background: #0b0c18; border: 2px solid transparent; border-radius: var(--radius-sm); overflow: hidden; }
+#shareStage .stageThumb:hover { border-color: var(--accent); }
+#shareStage .stageThumb video { width: 100%; height: 100%; object-fit: contain; display: block; }
+#shareStage .thumbName { position: absolute; left: 0; right: 0; bottom: 0; padding: 2px 6px; background: rgba(10, 10, 24, 0.7); font: 700 12px/1.4 var(--font); text-align: left; }
+#shareStage:fullscreen { width: 100vw; height: 100vh; padding: 12px; background: #0b0c18; }
+#shareStage:fullscreen .stageFrame { flex: 1; height: auto; }
+/* With the stage open the panel can outgrow a short window: let it scroll, and keep the top bar reachable above it. */
+#callPanel { max-height: calc(100vh - 80px); overflow-y: auto; }
+#topright { z-index: 2; }

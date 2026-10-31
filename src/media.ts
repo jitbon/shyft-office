@@ -1,4 +1,5 @@
-import type { Link } from '../shared/protocol';
+import type { Link, LinkKind } from '../shared/protocol';
+import { screenBitrate } from '../shared/screen-share';
 import { HIGHLIGHT, SPEAKING, VoiceDetector, rmsLevel } from './voice';
 
 /**
@@ -28,6 +29,17 @@ export interface MediaTransport {
   streams(): Map<string, MediaStream>;
   /** The local camera, when it is on. */
   localVideo(): MediaStream | null;
+  /**
+   * Send (or, with nulls, stop sending) a shared screen and its sound. Only peers you are in a conversation with
+   * get it; everyone else's screen slots stay empty (research R4).
+   */
+  setScreen(video: MediaStreamTrack | null, audio: MediaStreamTrack | null): void;
+  /** Screens other people are sharing with you, by sharer's peer id. */
+  screens(): Map<string, MediaStream>;
+  /** Your own shared screen, for the self-preview. */
+  localScreen(): MediaStream | null;
+  /** 0-1 playback volume for one sharer's screen sound. It does not fade with distance. */
+  setScreenGain(peer: string, gain: number): void;
   /** Peers whose voice you can hear right now (after distance volume), for the talking outline. */
   talking(): Set<string>;
   /** Whether your own microphone is picking up your voice right now. */
@@ -38,6 +50,8 @@ export interface MediaTransport {
 
 /** How long a peer's connection may stay down before they no longer look present. */
 const LOST_AFTER_MS = 5000;
+/** How long the polite side waits for the other side's first offer before making its own. */
+const FIRST_OFFER_WAIT_MS = 1500;
 
 interface Signal {
   description?: RTCSessionDescriptionInit;
@@ -52,10 +66,19 @@ interface Peer {
   ignoreOffer: boolean;
   audioTx: RTCRtpTransceiver;
   videoTx: RTCRtpTransceiver;
+  /** Screen slots, added after voice and camera on both sides. A share is a `replaceTrack` on them, never a renegotiation. */
+  screenVideoTx: RTCRtpTransceiver;
+  screenAudioTx: RTCRtpTransceiver;
   stream: MediaStream;
+  /** What the peer shares. Kept apart from `stream`: a Web Audio source plays only the first audio track of its stream. */
+  screen: MediaStream;
   /** The connection has been down long enough that the person should no longer look present. */
   lost: boolean;
   lostTimer?: number;
+  /** Sender settings were re-applied once the connection first came up. */
+  tuned?: boolean;
+  /** The polite side holds back its first offer for a moment (see `open`). */
+  offerTimer?: number;
   gain?: GainNode;
   /** Measures what you actually hear from this peer, after their distance volume. */
   analyser?: AnalyserNode;
@@ -63,6 +86,48 @@ interface Peer {
   voice: VoiceDetector;
   source?: MediaStreamAudioSourceNode;
   audioEl?: HTMLAudioElement;
+  /** The peer's screen sound: straight to the speakers, with no distance volume and no analyser. */
+  screenSource?: MediaStreamAudioSourceNode;
+  screenGain?: GainNode;
+  screenEl?: HTMLAudioElement;
+}
+
+/** The result of asking the browser to share a screen. */
+export type ShareResult =
+  | { ok: true; video: MediaStreamTrack; audio: MediaStreamTrack | null; w: number; h: number }
+  | { ok: false; error: 'cancelled' | 'os' | 'unsupported' };
+
+/**
+ * Opens the browser's picker for a screen, window or tab. Call it straight from the click handler: it needs a user gesture.
+ */
+export async function shareScreen(): Promise<ShareResult> {
+  if (!window.isSecureContext || !navigator.mediaDevices?.getDisplayMedia) return { ok: false, error: 'unsupported' };
+  const asked = performance.now();
+  let stream: MediaStream;
+  try {
+    // The extra members are Chromium hints that TypeScript's DOM types do not know yet.
+    const options = {
+      video: { frameRate: { ideal: 30, max: 30 }, width: { max: 1920 }, height: { max: 1080 } },
+      audio: true,
+      selfBrowserSurface: 'include',
+      surfaceSwitching: 'include',
+      systemAudio: 'include',
+    };
+    stream = await navigator.mediaDevices.getDisplayMedia(options as DisplayMediaStreamOptions);
+  } catch (err) {
+    const name = (err as Error).name;
+    // A refusal that comes back at once is the operating system's, not the person pressing Cancel.
+    if (name === 'NotReadableError' || (name === 'NotAllowedError' && performance.now() - asked < 300)) return { ok: false, error: 'os' };
+    return { ok: false, error: 'cancelled' };
+  }
+  const video = stream.getVideoTracks()[0];
+  if (!video) {
+    stream.getTracks().forEach((t) => t.stop());
+    return { ok: false, error: 'cancelled' };
+  }
+  video.contentHint = 'detail'; // text first: keep it sharp, drop frames before blur
+  const { width = 1280, height = 720 } = video.getSettings();
+  return { ok: true, video, audio: stream.getAudioTracks()[0] ?? null, w: width, h: height };
 }
 
 /** One RTCPeerConnection per linked peer, using the "perfect negotiation" pattern. */
@@ -76,6 +141,10 @@ export class MeshTransport implements MediaTransport {
   private peers = new Map<string, Peer>();
   private audioTrack: MediaStreamTrack | null = null;
   private videoTrack: MediaStreamTrack | null = null;
+  private screenVideo: MediaStreamTrack | null = null;
+  private screenAudio: MediaStreamTrack | null = null;
+  /** The kind of each peer's current link: the screen goes only to conversation peers. */
+  private kinds = new Map<string, LinkKind>();
   private ctx: AudioContext | null = null;
   private videoAllowed = true;
   private meter: { timer: number; source: MediaStreamAudioSourceNode } | null = null;
@@ -89,12 +158,16 @@ export class MeshTransport implements MediaTransport {
 
   setLinks(links: Link[], selfId: string) {
     const want = new Set(links.map((l) => l.peer));
+    // The kinds are updated before any track is applied, so a peer that stops being a conversation peer loses the screen at once.
+    this.kinds = new Map(links.map((l) => [l.peer, l.kind]));
     for (const id of [...this.peers.keys()]) {
       if (!want.has(id)) this.drop(id);
     }
     for (const id of want) {
       if (!this.peers.has(id)) this.open(id, selfId < id);
     }
+    this.applyTracks();
+    this.tuneScreen();
     this.onChange();
   }
 
@@ -108,6 +181,8 @@ export class MeshTransport implements MediaTransport {
         const collision = description.type === 'offer' && (peer.makingOffer || pc.signalingState !== 'stable');
         peer.ignoreOffer = !peer.polite && collision;
         if (peer.ignoreOffer) return;
+        clearTimeout(peer.offerTimer);
+        peer.offerTimer = undefined;
         await pc.setRemoteDescription(description);
         if (description.type === 'offer') {
           await pc.setLocalDescription();
@@ -185,6 +260,31 @@ export class MeshTransport implements MediaTransport {
     return this.videoTrack ? new MediaStream([this.videoTrack]) : null;
   }
 
+  setScreen(video: MediaStreamTrack | null, audio: MediaStreamTrack | null) {
+    if (this.screenVideo && this.screenVideo !== video) this.screenVideo.stop();
+    if (this.screenAudio && this.screenAudio !== audio) this.screenAudio.stop();
+    this.screenVideo = video;
+    this.screenAudio = audio;
+    this.applyTracks();
+    this.tuneScreen();
+    this.onChange();
+  }
+
+  screens() {
+    return new Map(
+      [...this.peers].filter(([, p]) => !p.lost && p.screen.getVideoTracks().length > 0).map(([id, p]) => [id, p.screen]),
+    );
+  }
+
+  localScreen() {
+    return this.screenVideo ? new MediaStream([this.screenVideo]) : null;
+  }
+
+  setScreenGain(peer: string, gain: number) {
+    const p = this.peers.get(peer);
+    if (p?.screenGain && this.ctx) p.screenGain.gain.setTargetAtTime(gain, this.ctx.currentTime, 0.05);
+  }
+
   talking() {
     return new Set([...this.peers].filter(([, p]) => !p.lost && p.voice.talking).map(([id]) => id));
   }
@@ -200,7 +300,9 @@ export class MeshTransport implements MediaTransport {
     this.stopMeter();
     this.audioTrack?.stop();
     this.videoTrack?.stop();
-    this.audioTrack = this.videoTrack = null;
+    this.screenVideo?.stop();
+    this.screenAudio?.stop();
+    this.audioTrack = this.videoTrack = this.screenVideo = this.screenAudio = null;
   }
 
   // ------------------------------------------------------------ internals
@@ -245,6 +347,82 @@ export class MeshTransport implements MediaTransport {
     for (const p of this.peers.values()) {
       void p.audioTx.sender.replaceTrack(this.audioTrack);
       void p.videoTx.sender.replaceTrack(this.outgoingVideo());
+      this.applyScreen(p);
+    }
+  }
+
+  /** Only people in your conversation get the screen; for anyone else the slots are empty. */
+  private applyScreen(p: Peer) {
+    const to = this.kinds.get(p.id) === 'conversation';
+    void p.screenVideoTx.sender.replaceTrack(to ? this.screenVideo : null);
+    void p.screenAudioTx.sender.replaceTrack(to ? this.screenAudio : null);
+  }
+
+  /**
+   * Quality settings for the screen (research R5, R6): keep text sharp, split a fixed budget among viewers, and let voice
+   * win when the line is tight. A browser that refuses a setting still shares.
+   */
+  private tuneScreen(only?: Peer) {
+    if (!this.screenVideo) return;
+    const viewers = [...this.peers.values()].filter((p) => this.kinds.get(p.id) === 'conversation');
+    const bitrate = screenBitrate(viewers.length);
+    for (const p of only ? viewers.filter((v) => v === only) : viewers) {
+      this.setSenderParams(p.screenVideoTx.sender, { maxBitrate: bitrate, maxFramerate: 30 }, (params, enc) => {
+        enc.priority = 'low';
+        enc.networkPriority = 'low';
+        params.degradationPreference = 'maintain-resolution';
+      });
+    }
+  }
+
+  /**
+   * Applies encoding settings. If the browser refuses the whole set (it may not know `priority` or `degradationPreference`),
+   * it retries with just the bitrate and frame rate, so the budget still holds. A browser that refuses both still shares.
+   */
+  private setSenderParams(
+    sender: RTCRtpSender,
+    core: { maxBitrate?: number; maxFramerate?: number },
+    extra: (params: RTCRtpSendParameters, enc: RTCRtpEncodingParameters) => void,
+  ) {
+    const apply = (withExtra: boolean) => {
+      const params = sender.getParameters();
+      if (!params.encodings?.length) params.encodings = [{}];
+      const enc = params.encodings[0];
+      Object.assign(enc, core);
+      if (withExtra) extra(params, enc);
+      return sender.setParameters(params);
+    };
+    try {
+      apply(true).catch(() => apply(false).catch(() => {}));
+    } catch {
+      try {
+        apply(false).catch(() => {});
+      } catch {
+        // not supported here: the defaults are fine
+      }
+    }
+  }
+
+  /** Voice is the last thing to suffer when the connection is short of room. */
+  private prioritizeVoice(peer: Peer) {
+    this.setSenderParams(peer.audioTx.sender, {}, (_params, enc) => {
+      enc.priority = 'high';
+      enc.networkPriority = 'high';
+    });
+  }
+
+  /** Screens are mostly text, so ask for VP9, then VP8 and H.264, ahead of the rest. */
+  private preferCodecs(tx: RTCRtpTransceiver) {
+    try {
+      const codecs = RTCRtpReceiver.getCapabilities?.('video')?.codecs;
+      if (!codecs || !tx.setCodecPreferences) return;
+      const rank = (c: RTCRtpCodec) => {
+        const i = ['video/vp9', 'video/vp8', 'video/h264'].indexOf(c.mimeType.toLowerCase());
+        return i < 0 ? 3 : i;
+      };
+      tx.setCodecPreferences([...codecs].sort((a, b) => rank(a) - rank(b)));
+    } catch {
+      // keep the browser's own order
     }
   }
 
@@ -298,15 +476,22 @@ export class MeshTransport implements MediaTransport {
       // Both media slots always exist, so toggling the mic or camera never renegotiates.
       audioTx: pc.addTransceiver('audio', { direction: 'sendrecv' }),
       videoTx: pc.addTransceiver('video', { direction: 'sendrecv' }),
+      screenVideoTx: pc.addTransceiver('video', { direction: 'sendrecv' }),
+      screenAudioTx: pc.addTransceiver('audio', { direction: 'sendrecv' }),
       stream: new MediaStream(),
+      screen: new MediaStream(),
       lost: false,
       voice: new VoiceDetector(HIGHLIGHT),
     };
     this.peers.set(id, peer);
     void peer.audioTx.sender.replaceTrack(this.audioTrack);
     void peer.videoTx.sender.replaceTrack(this.outgoingVideo());
+    this.applyScreen(peer);
+    this.preferCodecs(peer.screenVideoTx);
+    this.prioritizeVoice(peer);
 
-    pc.onnegotiationneeded = async () => {
+    const offer = async () => {
+      peer.offerTimer = undefined;
       try {
         peer.makingOffer = true;
         await pc.setLocalDescription();
@@ -317,10 +502,25 @@ export class MeshTransport implements MediaTransport {
         peer.makingOffer = false;
       }
     };
+    // Both sides add the same four slots and both want to offer at once. When the polite side's offer is rolled back, Chrome
+    // answers the other offer with new slots instead of the ones it added, which leaves two sets and breaks the screen slots.
+    // So the polite side waits to answer first, and offers on its own only if nothing arrives.
+    pc.onnegotiationneeded = () => {
+      if (polite && !pc.remoteDescription) peer.offerTimer ??= window.setTimeout(() => void offer(), FIRST_OFFER_WAIT_MS);
+      else void offer();
+    };
     pc.onicecandidate = ({ candidate }) => {
       if (candidate) this.onSignalOut(id, { candidate });
     };
-    pc.ontrack = ({ track }) => {
+    pc.ontrack = ({ track, transceiver }) => {
+      const slot = this.slotOf(peer, transceiver);
+      if (slot === 2 || slot === 3) {
+        peer.screen.addTrack(track);
+        if (track.kind === 'audio') this.attachScreenAudio(peer);
+        track.onmute = track.onunmute = () => this.onChange();
+        this.onChange();
+        return;
+      }
       peer.stream.addTrack(track);
       if (track.kind === 'audio') this.attachAudio(peer);
       track.onmute = track.onunmute = () => this.onChange();
@@ -336,6 +536,12 @@ export class MeshTransport implements MediaTransport {
           this.onChange();
         }, LOST_AFTER_MS);
       } else if (state === 'connected' || state === 'completed') {
+        // Settings made before the connection was negotiated may not have taken: set them again once it is up.
+        if (!peer.tuned) {
+          peer.tuned = true;
+          this.prioritizeVoice(peer);
+          this.tuneScreen(peer);
+        }
         clearTimeout(peer.lostTimer);
         peer.lostTimer = undefined;
         peer.lost = false;
@@ -364,6 +570,33 @@ export class MeshTransport implements MediaTransport {
     this.watchLevels();
   }
 
+  /**
+   * Which of the other side's four slots (0 voice, 1 camera, 2 screen video, 3 screen audio) a transceiver is.
+   * Chrome does not reuse the slots we added when it answers an offer, it makes new ones in the offer's order; so the
+   * slot is the new transceiver's place among the ones we did not add. A browser that reuses ours is matched directly.
+   */
+  private slotOf(peer: Peer, tx: RTCRtpTransceiver): number {
+    const own = [peer.audioTx, peer.videoTx, peer.screenVideoTx, peer.screenAudioTx];
+    const mine = own.indexOf(tx);
+    if (mine >= 0) return mine;
+    return peer.pc.getTransceivers().filter((t) => !own.includes(t)).indexOf(tx);
+  }
+
+  private attachScreenAudio(peer: Peer) {
+    if (peer.screenSource) return;
+    // The same Chromium quirk as for voices: the stream must also sit in a media element for Web Audio to hear it.
+    const el = new Audio();
+    el.muted = true;
+    el.srcObject = peer.screen;
+    void el.play().catch(() => {});
+    peer.screenEl = el;
+    const ctx = this.audioContext();
+    peer.screenSource = ctx.createMediaStreamSource(peer.screen);
+    peer.screenGain = ctx.createGain();
+    // No distance volume and no analyser: a shared screen is heard at the same level wherever you stand.
+    peer.screenSource.connect(peer.screenGain).connect(ctx.destination);
+  }
+
   /** One loop, ten times a second, reads every peer's level and updates who is talking. */
   private watchLevels() {
     if (this.levelsTimer) return;
@@ -384,11 +617,16 @@ export class MeshTransport implements MediaTransport {
     if (!peer) return;
     this.peers.delete(id);
     clearTimeout(peer.lostTimer);
+    clearTimeout(peer.offerTimer);
     peer.pc.onnegotiationneeded = peer.pc.onicecandidate = peer.pc.ontrack = peer.pc.oniceconnectionstatechange = null;
     peer.pc.close();
     peer.source?.disconnect();
     peer.gain?.disconnect();
     peer.analyser?.disconnect();
+    peer.screenSource?.disconnect();
+    peer.screenGain?.disconnect();
+    if (peer.screenEl) peer.screenEl.srcObject = null;
+    this.kinds.delete(id);
     if (![...this.peers.values()].some((p) => p.analyser)) {
       clearInterval(this.levelsTimer);
       this.levelsTimer = 0;
