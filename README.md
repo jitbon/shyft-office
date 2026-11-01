@@ -43,6 +43,12 @@ other than localhost the browser will not allow the camera, though chat and walk
   room, locked desk or overheard pod neighbour never sees it. It stops with **Stop sharing**, the browser's own stop bar, or
   when you leave the conversation or turn on Do Not Disturb. **Full window** fills the browser window. Sharing a Chrome tab
   can include its sound, with its own mute and volume for each viewer. It needs a secure (https or localhost) address.
+- **Drawing on a share.** Everyone watching a share, and the sharer, can draw on it at once. Turn on the pen (the pencil button
+  on the shared screen) and drag. Each person has their own color, with a small name tag at the pen tip, and lines fade after
+  a few seconds; **Keep** (the pin) holds them. **Clear mine** removes your lines, and the sharer has **Clear all** and **Let
+  others draw** to switch it off. Esc puts the pen down. The sharer draws through **Open** on their banner, which shows
+  their own screen large in the app (a web page can't draw over the real desktop). Ink goes only to the people who see the
+  share, and nothing is stored.
 - **Status.** Click **Status** for Available, Busy or Do Not Disturb, with an optional note and time limit.
   **Ctrl+U** (**⌘+U** on a Mac) toggles Do Not Disturb: nobody can start a conversation with you, and your mic and
   camera stay off. People can still **ring** you (accept and you land next to them) or **wave**: use the buttons
@@ -198,6 +204,6 @@ as observed in its shipped web client) and `quickstart.md` (how to try each feat
 ## Ideas for next steps
 
 - Sign-in, so desks and admin rights belong to people rather than browsers.
-- A media server for large meetings; recording; drawing on a shared screen.
+- A media server for large meetings; recording.
 - A map editor / Tiled import, multiple floors.
 - Animated and moving objects, and full 3D.

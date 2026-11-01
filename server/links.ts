@@ -1,4 +1,5 @@
 import type { ConversationInfo, Link, PlayerState, ServerMsg, ShareInfo } from '../shared/protocol';
+import { assignInkSlots } from '../shared/ink';
 import { computeLinks, pairKey, prevFrom, type LinkResult, type OfficeInput } from '../shared/proximity';
 
 const EMPTY = JSON.stringify({ links: [], conversation: null, full: false });
@@ -41,6 +42,8 @@ export class LinkEngine {
   private sent = new Map<string, string>();
   private speaking = new Set<string>();
   private spokeAt = new Map<string, number>();
+  /** Each player's ink color slot, kept while they stay in a conversation that has a share. */
+  private inkSlots = new Map<string, number>();
   /** Runs before every recompute, for time-based changes such as expiring statuses. */
   beforeUpdate: () => void = () => {};
   private tickMs = 0;
@@ -102,6 +105,7 @@ export class LinkEngine {
     this.sent.delete(id);
     this.speaking.delete(id);
     this.spokeAt.delete(id);
+    this.inkSlots.delete(id);
   }
 
   update() {
@@ -111,6 +115,22 @@ export class LinkEngine {
     this.result = computeLinks(players, this.prev, this.opts, this.office());
     this.prev = prevFrom(this.result.links);
     this.pairs = new Set(this.result.links.map((l) => pairKey(l.a, l.b)));
+
+    // Ink colors: one slot per member of any conversation, kept while they stay in one (even between shares), and sent
+    // only with a conversation that has a share.
+    const inkOf = new Map<string, Record<string, number>>();
+    const inConversation = new Set<string>();
+    for (const c of this.result.conversations) {
+      const slots = assignInkSlots(c.members, this.inkSlots);
+      const hasShare = this.shares(c.members).length > 0;
+      const ink = hasShare ? Object.fromEntries(slots) : undefined;
+      for (const id of c.members) {
+        inConversation.add(id);
+        this.inkSlots.set(id, slots.get(id)!);
+        if (ink) inkOf.set(id, ink);
+      }
+    }
+    for (const id of [...this.inkSlots.keys()]) if (!inConversation.has(id)) this.inkSlots.delete(id);
 
     for (const p of players) {
       const links: Link[] = [];
@@ -130,7 +150,7 @@ export class LinkEngine {
             ...(conv.context.startsWith('area:') && conv.members.length > VIDEO_THRESHOLD
               ? { video: pickVideo(conv.members, this.speaking, this.spokeAt) }
               : {}),
-            ...(shares.length ? { shares } : {}),
+            ...(shares.length ? { shares, ink: inkOf.get(p.id) } : {}),
           }
         : null;
       const full = this.result.overflow.has(p.id);

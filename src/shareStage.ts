@@ -1,5 +1,7 @@
 import type { ShareInfo } from '../shared/protocol';
 import { icon } from './icons';
+import { InkLayer, type InkOut } from './inkLayer';
+import type { InkStore } from './inkModel';
 
 // ------------------------------------------------------------------ the plan (pure)
 
@@ -8,10 +10,12 @@ export interface StageInput {
   selfId: string;
   /** A shareId this viewer clicked to watch large. */
   picked: string | null;
+  /** Show the viewer's own share large (for drawing on it), when they are sharing. */
+  selfLarge?: boolean;
 }
 
 export interface StagePlan {
-  /** The share shown large: the viewer's pick while it runs, else the newest share that is not their own. */
+  /** The share shown large: the viewer's own when they opened it, else their pick while it runs, else the newest share that is not theirs. */
   large: string | null;
   /** The other shares that are not the viewer's own, newest first. */
   thumbs: string[];
@@ -29,11 +33,12 @@ export function stagePlan(input: StageInput, prevIds: Iterable<string> = []): St
   const others = input.shares.filter((s) => s.sharer !== input.selfId);
   const newestFirst = [...others].reverse();
   const picked = others.some((s) => s.shareId === input.picked) ? input.picked : null;
-  const large = picked ?? newestFirst[0]?.shareId ?? null;
+  const own = input.shares.find((s) => s.sharer === input.selfId)?.shareId ?? null;
+  const large = (input.selfLarge ? own : null) ?? picked ?? newestFirst[0]?.shareId ?? null;
   return {
     large,
     thumbs: newestFirst.map((s) => s.shareId).filter((id) => id !== large),
-    selfPreview: input.shares.find((s) => s.sharer === input.selfId)?.shareId ?? null,
+    selfPreview: own,
     picked,
     started: newestFirst.map((s) => s.shareId).filter((id) => !prev.has(id)),
   };
@@ -51,6 +56,13 @@ export interface StageItem {
   name: string;
   stream: MediaStream | null;
   audio: boolean;
+  /** The picture's size, which ink is laid out against until the first frame arrives. */
+  w: number;
+  h: number;
+  /** Others may draw on it. */
+  drawing: boolean;
+  /** It is your own share, shown in the app so you can draw on it. */
+  self: boolean;
 }
 
 export interface StageView {
@@ -88,6 +100,24 @@ export class ShareStage {
   private lastFrameAt = 0;
   private cueTimer = 0;
   private watchTimer = 0;
+  private frame!: HTMLElement;
+
+  // Drawing on the large share.
+  /** Called with each batch of your pen points, to send to the server. */
+  onInk: (msg: InkOut) => void = () => {};
+  onInkClear: (shareId: string, scope: 'mine' | 'all') => void = () => {};
+  onInkAllow: (shareId: string, on: boolean) => void = () => {};
+  /** Called when the pen turns on or off, so the page can stop walking while you draw. */
+  onPenChange: (on: boolean) => void = () => {};
+  private layer: InkLayer | undefined;
+  private store: InkStore | undefined;
+  private selfId: () => string = () => '';
+  private penBtn = document.createElement('button');
+  private keepBtn = document.createElement('button');
+  private clearMine = document.createElement('button');
+  private clearAll = document.createElement('button');
+  private allowBtn = document.createElement('button');
+  private inkTools = document.createElement('span');
 
   constructor(private el: HTMLElement) {
     el.hidden = true;
@@ -140,10 +170,14 @@ export class ShareStage {
 
     const bar = document.createElement('div');
     bar.className = 'stageBar';
-    bar.append(this.label, this.sound, this.full);
+    this.inkTools.className = 'stageInk';
+    this.inkTools.hidden = true;
+    this.makeInkButtons();
+    bar.append(this.label, this.inkTools, this.sound, this.full);
     const frame = document.createElement('div');
     frame.className = 'stageFrame';
     frame.append(this.main, this.status, this.cue);
+    this.frame = frame;
     el.append(bar, frame, this.thumbRow);
 
     // A frame arriving means the picture is live; none for a few seconds means the sharer stopped sending (a minimized window).
@@ -162,7 +196,10 @@ export class ShareStage {
     } else {
       video.ontimeupdate = seen;
     }
-    this.watchTimer = window.setInterval(() => this.updateStatus(), 500);
+    this.watchTimer = window.setInterval(() => {
+      this.updateStatus();
+      this.refreshInk();
+    }, 500);
   }
 
   render(view: StageView) {
@@ -172,6 +209,8 @@ export class ShareStage {
     if (!large) {
       if (document.fullscreenElement === this.el) void document.exitFullscreen();
       this.main.srcObject = null;
+      this.layer?.setShare(null);
+      this.inkTools.hidden = true;
       this.shownId = null;
       this.shownTrack = undefined;
       this.thumbs.forEach((t) => t.el.remove());
@@ -179,7 +218,7 @@ export class ShareStage {
       this.dropEnded([]);
       return;
     }
-    this.label.textContent = `${large.name}'s screen`;
+    this.label.textContent = large.self ? 'Your screen' : `${large.name}'s screen`;
     const track = large.stream?.getVideoTracks()[0];
     // Set the source only when the share or its track changes, so the picture does not flicker.
     if (this.shownId !== large.shareId || this.shownTrack !== track) {
@@ -194,6 +233,8 @@ export class ShareStage {
       this.slider.value = String(this.levelOf(large.shareId));
       this.applyVolume(large);
     }
+    this.layer?.setShare({ shareId: large.shareId, w: large.w, h: large.h });
+    this.refreshInk();
     this.renderThumbs(view.thumbs);
     this.dropEnded([large, ...view.thumbs].map((s) => s.shareId));
     if (view.started.length) this.showCue(view.started);
@@ -252,6 +293,121 @@ export class ShareStage {
     }
     // Keep the row in newest-first order.
     this.thumbRow.replaceChildren(...items.map((i) => this.thumbs.get(i.shareId)!.el));
+  }
+
+  // ------------------------------------------------------------------ drawing
+
+  /** Turns on drawing: `store` holds everyone's strokes. `colorOf` gives a player's ink slot. */
+  bindInk(opts: { store: InkStore; selfId: () => string; colorOf: (id: string) => number; nameOf: (id: string) => string }) {
+    this.store = opts.store;
+    this.selfId = opts.selfId;
+    const video = this.main as HTMLVideoElement;
+    this.layer = new InkLayer(this.frame, video, opts.store, opts.selfId, opts.colorOf);
+    this.layer.nameOf = opts.nameOf;
+    this.layer.onSend = (m) => this.onInk(m);
+    this.layer.onPenChange = (on) => {
+      this.syncPen();
+      this.onPenChange(on);
+    };
+  }
+
+  get penOn() {
+    return !!this.layer?.penOn;
+  }
+
+  setPen(on: boolean) {
+    if (!this.layer) return;
+    this.layer.setPen(on);
+    this.syncPen();
+    this.onPenChange(this.layer.penOn);
+  }
+
+  /** Draws any ink that arrived. */
+  wakeInk() {
+    this.layer?.wake();
+  }
+
+  pausePen(ms: number) {
+    this.layer?.pause(ms);
+  }
+
+  private makeInkButtons() {
+    const btn = (b: HTMLButtonElement, html: string, label: string) => {
+      b.type = 'button';
+      b.className = 'stagebtn';
+      b.innerHTML = html;
+      b.setAttribute('aria-label', label);
+      b.title = label;
+    };
+    btn(this.penBtn, icon('pen'), 'Draw on this screen');
+    this.penBtn.setAttribute('aria-pressed', 'false');
+    this.penBtn.onclick = () => {
+      this.setPen(!this.penOn);
+      this.penBtn.blur();
+    };
+    btn(this.keepBtn, icon('pin'), 'Keep my lines on screen');
+    this.keepBtn.setAttribute('aria-pressed', 'false');
+    this.keepBtn.onclick = () => {
+      const on = this.keepBtn.getAttribute('aria-pressed') !== 'true';
+      this.layer?.setKeep(on);
+      this.keepBtn.setAttribute('aria-pressed', String(on));
+      this.keepBtn.classList.toggle('on', on);
+      this.keepBtn.blur();
+    };
+    btn(this.clearMine, `${icon('clear')}<span>Clear mine</span>`, 'Clear my lines');
+    this.clearMine.onclick = () => {
+      const id = this.current?.shareId;
+      if (!id) return;
+      this.store?.clear(id, 'mine', this.selfId());
+      this.onInkClear(id, 'mine');
+      this.clearMine.blur();
+      this.refreshInk();
+    };
+    btn(this.clearAll, `${icon('clear')}<span>Clear all</span>`, 'Clear everyone\'s lines');
+    this.clearAll.onclick = () => {
+      const id = this.current?.shareId;
+      if (!id) return;
+      this.store?.clear(id, 'all', this.selfId());
+      this.onInkClear(id, 'all');
+      this.clearAll.blur();
+      this.refreshInk();
+    };
+    btn(this.allowBtn, 'Let others draw', 'Let others draw on your screen');
+    this.allowBtn.setAttribute('aria-pressed', 'true');
+    this.allowBtn.onclick = () => {
+      const c = this.current;
+      if (!c) return;
+      this.onInkAllow(c.shareId, !c.drawing);
+      this.allowBtn.blur();
+    };
+    this.inkTools.append(this.penBtn, this.keepBtn, this.clearMine, this.clearAll, this.allowBtn);
+  }
+
+  private syncPen() {
+    const on = this.penOn;
+    this.penBtn.classList.toggle('on', on);
+    this.penBtn.setAttribute('aria-pressed', String(on));
+  }
+
+  /** Shows the drawing tools that apply to the large share now. */
+  private refreshInk() {
+    const c = this.current;
+    if (!c || !this.layer) {
+      this.inkTools.hidden = true;
+      return;
+    }
+    this.inkTools.hidden = false;
+    const canDraw = c.self || c.drawing;
+    if (!canDraw && this.penOn) this.setPen(false);
+    this.penBtn.disabled = !canDraw;
+    this.penBtn.title = canDraw ? 'Draw on this screen' : `${c.name} turned drawing off`;
+    this.keepBtn.disabled = !canDraw;
+    this.clearMine.hidden = !(this.store && this.store.count(c.shareId, this.selfId()) > 0);
+    this.clearAll.hidden = !c.self;
+    this.allowBtn.hidden = !c.self;
+    this.allowBtn.setAttribute('aria-pressed', String(c.drawing));
+    this.allowBtn.classList.toggle('on', c.drawing);
+    this.syncPen();
   }
 
   private showCue(names: string[]) {

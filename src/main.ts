@@ -10,6 +10,7 @@ import { Builder } from './builder/builder';
 import { CallPanel, type TileInfo } from './callPanel';
 import { changeCharacter, getMemberId, showJoinScreen } from './join';
 import { MeshTransport, shareScreen } from './media';
+import { InkStore } from './inkModel';
 import { ShareStage, stagePlan, type StageItem } from './shareStage';
 import {
   areaLabel, blocked, closeDeskCard, deskTitle, showDeskCue, notice, deskCardOpen, deskMarkers, deskTags, facedDesk, initOfficeUi, onNotify,
@@ -49,7 +50,7 @@ const raycaster = new Raycaster();
 const buildBtn = $<HTMLButtonElement>('buildBtn');
 const net = new Net();
 const media = new MeshTransport();
-const callPanel = new CallPanel($('callPanel'), (which) => toggleDevice(which), () => toggleShare());
+const callPanel = new CallPanel($('callPanel'), (which) => toggleDevice(which), () => toggleShare(), (open) => setSelfLarge(open));
 const shareStage = new ShareStage($('shareStage'));
 const studio = new Studio({
   notice: (text) => notice(text, { key: 'studio', ttlMs: 3000 }),
@@ -130,6 +131,17 @@ window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') (e.target as HTMLElement).blur();
     return;
   }
+  if (e.key === 'Escape') {
+    // Esc backs out of drawing first, then out of the larger view of your own share.
+    if (shareStage.penOn) {
+      shareStage.setPen(false);
+      return;
+    }
+    if (selfLarge) {
+      setSelfLarge(false);
+      return;
+    }
+  }
   if (e.code === 'KeyB' && !e.repeat && session.canBuild) {
     e.preventDefault();
     toggleBuild();
@@ -181,6 +193,8 @@ window.addEventListener('keydown', (e) => {
   if (mode === '2d' && (e.key === '-' || e.key === '_')) zoom = stepZoom(zoom, -1, dpr);
   // A key pressed with ⌘, Ctrl or Alt is a shortcut (⌘+D, Ctrl+S…), not a step: on a Mac its keyup never comes, so it would stick.
   if (e.metaKey || e.ctrlKey || e.altKey) return;
+  // While the pen is on the keys do not walk you around the office.
+  if (shareStage.penOn && /^(Key[WASD]|Arrow(Up|Down|Left|Right))$/.test(e.code)) return;
   keys.add(e.code);
 });
 window.addEventListener('keyup', (e) => {
@@ -456,6 +470,34 @@ let shareStatus: ShareStatus = 'idle';
 let stopsAwaited = 0;
 /** The share this viewer clicked to watch large (in memory only). */
 let pickedShare: string | null = null;
+/** Your own share is open large in the app, so you can draw on it. In memory only. */
+let selfLarge = false;
+/** Everyone's pen strokes on the shares you can see. Nothing is kept once they fade or the share ends. */
+const inkStore = new InkStore();
+const lastDrawing = new Map<string, boolean>();
+const inkColorOf = (id: string) => conversation?.ink?.[id] ?? 0;
+
+function setSelfLarge(on: boolean) {
+  selfLarge = on;
+  if (!on && shareStage.penOn) shareStage.setPen(false);
+  refreshCallPanel();
+}
+
+/** Drops ink for shares that ended or were switched off, and ends the lines of people who left the conversation. */
+function syncInk() {
+  const shares = conversation?.shares ?? [];
+  const live = new Set(shares.map((sh) => sh.shareId));
+  for (const id of inkStore.shareIds()) if (!live.has(id)) inkStore.dropShare(id);
+  for (const id of [...lastDrawing.keys()]) if (!live.has(id)) lastDrawing.delete(id);
+  for (const sh of shares) {
+    if (lastDrawing.get(sh.shareId) === true && !sh.drawing) inkStore.dropShare(sh.shareId);
+    lastDrawing.set(sh.shareId, sh.drawing);
+  }
+  const members = new Set(conversation?.members ?? []);
+  const now = performance.now();
+  for (const d of inkStore.drawers()) if (d !== me.id && !members.has(d)) inkStore.endFrom(d, now);
+  shareStage.wakeInk();
+}
 let seenShares: string[] = [];
 let sizeTimer = 0;
 const MAX_SHARES_NOTE = 'Sharing is full here (3 people are sharing)';
@@ -523,15 +565,23 @@ function refreshShare() {
     else if (shares.length >= 3) control = { unavailable: MAX_SHARES_NOTE };
   }
   callPanel.setShareControl(control);
-  callPanel.setSharingBanner(shareStatus === 'sharing' ? media.localScreen() : null, !conversation || conversation.members.length < 2);
+  const sharing = shareStatus === 'sharing' && shares.some((sh) => sh.sharer === me.id);
+  if (!sharing) selfLarge = false;
+  callPanel.setSharingBanner(shareStatus === 'sharing' ? media.localScreen() : null, !conversation || conversation.members.length < 2, selfLarge);
 
-  const plan = stagePlan({ shares, selfId: me.id, picked: pickedShare }, seenShares);
+  const plan = stagePlan({ shares, selfId: me.id, picked: pickedShare, selfLarge }, seenShares);
   pickedShare = plan.picked;
   seenShares = shares.map((sh) => sh.shareId);
   const screens = media.screens();
   const item = (id: string | null): StageItem | null => {
     const sh = shares.find((x) => x.shareId === id);
-    return sh ? { shareId: sh.shareId, sharer: sh.sharer, name: others.get(sh.sharer)?.name ?? 'Someone', stream: screens.get(sh.sharer) ?? null, audio: sh.audio } : null;
+    if (!sh) return null;
+    const self = sh.sharer === me.id;
+    return {
+      shareId: sh.shareId, sharer: sh.sharer, name: self ? 'You' : others.get(sh.sharer)?.name ?? 'Someone',
+      stream: self ? media.localScreen() : screens.get(sh.sharer) ?? null,
+      audio: sh.audio && !self, w: sh.w, h: sh.h, drawing: sh.drawing, self,
+    };
   };
   shareStage.render({
     large: item(plan.large),
@@ -646,9 +696,21 @@ function onMessage(msg: ServerMsg) {
       media.setLinks(links, me.id);
       media.setVideoAllowed(!conversation?.video || conversation.video.includes(me.id));
       updateChatScope();
+      syncInk();
       refreshCallPanel();
       break;
     }
+    case 'ink':
+      inkStore.add(msg, inkColorOf(msg.from), performance.now());
+      shareStage.wakeInk();
+      break;
+    case 'inkClear':
+      inkStore.clear(msg.shareId, msg.scope, msg.from);
+      shareStage.wakeInk();
+      break;
+    case 'inkSlow':
+      shareStage.pausePen(1000);
+      break;
     case 'rtc':
       void media.onSignal(msg.from, msg.data);
       break;
@@ -1029,6 +1091,7 @@ async function start() {
       conversation = null;
       convFull = false;
       stopsAwaited = 0;
+      selfLarge = false;
       if (shareStatus !== 'idle') stopShareLocally(); // the server dropped the share with the connection
       media.setLinks([], me.id);
       updateChatScope();
@@ -1044,6 +1107,18 @@ async function start() {
     refreshCallPanel();
   };
   shareStage.onScreenVolume = (sharer, value) => media.setScreenGain(sharer, value);
+  shareStage.bindInk({
+    store: inkStore,
+    selfId: () => me.id,
+    colorOf: inkColorOf,
+    nameOf: (id) => others.get(id)?.name ?? 'Someone',
+  });
+  shareStage.onInk = (m) => net.send(m);
+  shareStage.onInkClear = (shareId, scope) => net.send({ t: 'inkClear', shareId, scope });
+  shareStage.onInkAllow = (shareId, on) => net.send({ t: 'inkAllow', shareId, on });
+  shareStage.onPenChange = (on) => {
+    if (on) keys.clear();
+  };
   // Clicking the call panel frees the mouse in first person, so the buttons and the stage can be used.
   $('callPanel').addEventListener('pointerdown', () => document.exitPointerLock());
   media.onDeviceLost = onDeviceLost;

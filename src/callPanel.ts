@@ -40,6 +40,8 @@ export class CallPanel {
   private banner = document.createElement('div');
   private bannerVideo = document.createElement('video');
   private bannerNote = document.createElement('span');
+  private openBtn = document.createElement('button');
+  private ownOpen = false;
 
   /**
    * `onToggle` is what the mic and camera buttons on your own tile do (the same as the toolbar buttons).
@@ -49,6 +51,8 @@ export class CallPanel {
     private root: HTMLElement,
     private onToggle: (which: 'mic' | 'cam') => void = () => {},
     private onShare: () => void = () => {},
+    /** Open or close the larger in-app view of your own share, which you draw on. */
+    private onOpenOwn: (open: boolean) => void = () => {},
   ) {
     this.head.className = 'head';
     this.shareBtn.type = 'button';
@@ -76,7 +80,19 @@ export class CallPanel {
       this.onShare();
       stop.blur();
     };
-    text.append(title, this.bannerNote, stop);
+    this.openBtn.type = 'button';
+    this.openBtn.className = 'sharebtn';
+    this.openBtn.onclick = () => {
+      this.ownOpen = !this.ownOpen;
+      this.onOpenOwn(this.ownOpen);
+      this.openBtn.blur();
+    };
+    this.openBtn.textContent = 'Open';
+    this.openBtn.title = 'Open your shared screen here, to draw on it';
+    const actions = document.createElement('div');
+    actions.className = 'bannerActions';
+    actions.append(this.openBtn, stop);
+    text.append(title, this.bannerNote, actions);
     this.banner.append(this.bannerVideo, text);
     this.setShareControl('idle');
   }
@@ -94,8 +110,11 @@ export class CallPanel {
   }
 
   /** Shows (or, with null, hides) the "You are sharing" banner with a small preview of your own screen. */
-  setSharingBanner(stream: MediaStream | null, alone: boolean) {
+  setSharingBanner(stream: MediaStream | null, alone: boolean, open = false) {
     this.banner.hidden = !stream;
+    this.ownOpen = open;
+    this.openBtn.textContent = open ? 'Close' : 'Open';
+    this.openBtn.title = open ? 'Close the larger view of your shared screen' : 'Open your shared screen here, to draw on it';
     if (this.bannerVideo.srcObject !== stream) this.bannerVideo.srcObject = stream;
     this.bannerNote.textContent = alone ? 'No one else is here yet' : '';
   }

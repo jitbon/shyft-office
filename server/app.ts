@@ -13,6 +13,7 @@ import { compileWorld } from '../shared/world';
 import type { ClientMsg, ItemInfo, Look, PlayerState, ServerMsg } from '../shared/protocol';
 import { isMemberId, isUuid } from '../shared/member';
 import { positionContext } from '../shared/proximity';
+import { INK_RATE_MSGS, INK_RATE_POINTS, validateInk, validateInkAllow, validateInkClear } from '../shared/ink';
 import { shareKeeps, validateShareMsg, type SharePlace } from '../shared/screen-share';
 import { cleanStatus, expireStatus } from '../shared/status';
 import { handleApi, type ApiContext } from './api';
@@ -201,6 +202,9 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
   /** When each connection last sent a `share` message, to keep it to four a second. */
   const shareTimes = new Map<string, number[]>();
   const rtcRecent = new Map<string, { at: number; bytes: number }[]>();
+  /** Ink sent in the last second, per connection, and when it was last told to slow down. */
+  const inkRecent = new Map<string, { at: number; pts: number }[]>();
+  const inkSlowAt = new Map<string, number>();
 
   function broadcast(msg: ServerMsg, except?: WebSocket) {
     const data = JSON.stringify(msg);
@@ -686,6 +690,8 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       const started = shares.start(me.id, share, origin, links.conversationMembers(me.id), now);
       send(ws, started.ok ? { t: 'shareState', on: true, shareId: started.shareId } : { t: 'shareState', on: false, reason: started.reason });
       links.update();
+    } else if (msg.t === 'ink' || msg.t === 'inkClear' || msg.t === 'inkAllow') {
+      handleInk(ws, me, msg);
     } else if (msg.t === 'rtc') {
       // Call setup only travels between people who are currently linked.
       if (rawLength > MAX_RTC_BYTES) return;
@@ -699,6 +705,49 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     }
   }
 
+  /**
+   * Pen ink on a share. The server keeps no stroke: it checks who may draw, and passes the ink on to the other members of the
+   * sharer's conversation at once (not on the link tick).
+   */
+  function handleInk(ws: WebSocket, me: PlayerState, msg: Extract<ClientMsg, { t: 'ink' | 'inkClear' | 'inkAllow' }>) {
+    const now = Date.now();
+    const recent = (inkRecent.get(me.id) ?? []).filter((r) => now - r.at < 1000);
+    const points = msg.t === 'ink' && Array.isArray(msg.pts) ? msg.pts.length / 2 : 0;
+    if (recent.length >= INK_RATE_MSGS || recent.reduce((n, r) => n + r.pts, points) > INK_RATE_POINTS) {
+      if (now - (inkSlowAt.get(me.id) ?? 0) >= 1000) {
+        inkSlowAt.set(me.id, now);
+        send(ws, { t: 'inkSlow' });
+      }
+      return;
+    }
+    recent.push({ at: now, pts: points });
+    inkRecent.set(me.id, recent);
+
+    const parsed = msg.t === 'ink' ? validateInk(msg) : msg.t === 'inkClear' ? validateInkClear(msg) : validateInkAllow(msg);
+    if (!parsed) return;
+    const rec = shares.byId(parsed.shareId);
+    if (!rec) return;
+    const isSharer = me.id === rec.sharer;
+    const members = links.conversationMembers(rec.sharer);
+    if (!isSharer && !members.includes(me.id)) return;
+    const others = members.filter((id) => id !== me.id);
+
+    if (msg.t === 'inkAllow') {
+      if (!isSharer) return;
+      const allow = parsed as { shareId: string; on: boolean };
+      shares.setDrawing(me.id, allow.on);
+      if (!allow.on) for (const id of others) sendTo(id, { t: 'inkClear', from: me.id, shareId: rec.shareId, scope: 'all' });
+      links.update();
+    } else if (msg.t === 'inkClear') {
+      const clear = parsed as { shareId: string; scope: 'mine' | 'all' };
+      if (clear.scope === 'all' && !isSharer) return;
+      for (const id of others) sendTo(id, { t: 'inkClear', from: me.id, shareId: rec.shareId, scope: clear.scope });
+    } else {
+      if (!rec.drawing && !isSharer) return;
+      for (const id of others) sendTo(id, { t: 'ink', from: me.id, ...(parsed as ReturnType<typeof validateInk> & object) });
+    }
+  }
+
   function onClose(ws: WebSocket) {
     const c = conns.get(ws);
     if (!c) return;
@@ -707,6 +756,8 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     lastJump.delete(c.p.id);
     shareTimes.delete(c.p.id);
     rtcRecent.delete(c.p.id);
+    inkRecent.delete(c.p.id);
+    inkSlowAt.delete(c.p.id);
     shares.stop(c.p.id);
     sessions.delete(c.session);
     links.remove(c.p.id);

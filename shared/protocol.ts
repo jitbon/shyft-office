@@ -54,6 +54,8 @@ export interface ConversationInfo {
   video?: string[];
   /** Members' running screen shares, oldest first. Omitted when there are none. */
   shares?: ShareInfo[];
+  /** Player id → ink slot 0–7. Only when the conversation has a share. */
+  ink?: Record<string, number>;
 }
 
 /** A running screen share, as the members of its conversation see it. */
@@ -66,6 +68,8 @@ export interface ShareInfo {
   /** The picture's size in pixels. */
   w: number;
   h: number;
+  /** Others may draw on this share. Set by the sharer, on by default. */
+  drawing: boolean;
 }
 
 export interface SpriteInfo {
@@ -141,6 +145,10 @@ export type ClientMsg =
   /** Start sharing the screen, or (while sharing) update its size or sound; `on: false` stops. */
   | { t: 'share'; on: true; audio: boolean; w: number; h: number }
   | { t: 'share'; on: false }
+  /** Pen points for a share: integers 0–10000 across its picture, as `[x, y, …]`. */
+  | { t: 'ink'; shareId: string; strokeId: number; seq: number; pts: number[]; end?: true; keep?: true }
+  | { t: 'inkClear'; shareId: string; scope: 'mine' | 'all' }
+  | { t: 'inkAllow'; shareId: string; on: boolean }
   | ({ t: 'admin' } & AdminOp);
 
 export type ServerMsg =
@@ -177,6 +185,11 @@ export type ServerMsg =
   | { t: 'rtc'; from: string; data: unknown }
   /** Sent only to the sharer: the share started, or why it is not running. */
   | { t: 'shareState'; on: boolean; shareId?: string; reason?: 'full' | 'dnd' | 'left' | 'stopped' }
+  /** Someone's pen points on a share you can see. Relayed at once; the server keeps nothing. */
+  | { t: 'ink'; from: string; shareId: string; strokeId: number; seq: number; pts: number[]; end?: true; keep?: true }
+  | { t: 'inkClear'; from: string; shareId: string; scope: 'mine' | 'all' }
+  /** To the sender only: too much ink too fast; the pen pauses for a moment. */
+  | { t: 'inkSlow' }
   | {
       t: 'presence';
       id: string;

@@ -520,6 +520,18 @@ body.building #statusPanel, body.building #adminPanel, body.building #help, body
 #shareStage .stageThumb video { width: 100%; height: 100%; object-fit: contain; display: block; }
 #shareStage .thumbName { position: absolute; left: 0; right: 0; bottom: 0; padding: 2px 6px; background: rgba(10, 10, 24, 0.7); font: 700 12px/1.4 var(--font); text-align: left; }
 #shareStage:fullscreen { width: 100vw; height: 100vh; padding: 12px; background: #0b0c18; }
+/* Drawing on the shared picture: a canvas laid exactly over it, so ink lands on the same spot at any window size. */
+#shareStage .inkCanvas { position: absolute; pointer-events: none; touch-action: none; }
+#shareStage .inkCanvas.pen { pointer-events: auto; cursor: crosshair; }
+#shareStage .inkTag { position: absolute; left: 0; top: 0; padding: 1px 8px; border-radius: var(--radius-pill); font: 700 11px/1.5 var(--font); pointer-events: none; white-space: nowrap; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35); }
+#shareStage .inkTag[hidden], #shareStage .inkNote[hidden] { display: none; }
+#shareStage .inkNote { position: absolute; left: 0; top: 0; padding: 2px 8px; border-radius: var(--radius-pill); background: rgba(10, 10, 24, 0.85); font: 700 12px/1.4 var(--font); pointer-events: none; }
+#shareStage .stageInk { display: inline-flex; align-items: center; gap: 4px; }
+#shareStage .stageInk[hidden], #shareStage .stagebtn[hidden] { display: none; }
+#shareStage .stagebtn.on { background: var(--accent); color: #fff; }
+#shareStage .stagebtn:disabled { opacity: 0.45; cursor: not-allowed; }
+#shareStage .stagebtn span { margin-left: 4px; }
+.shareBanner .bannerActions { display: flex; gap: 6px; }
 #shareStage:fullscreen .stageFrame { flex: 1; height: auto; }
 /* With the stage open the panel can outgrow a short window: let it scroll, and keep the top bar reachable above it. */
 #callPanel { max-height: calc(100vh - 80px); overflow-y: auto; }

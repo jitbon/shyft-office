@@ -38,7 +38,7 @@ export class ShareRegistry {
     const n = (this.counts.get(sharer) ?? 0) + 1;
     this.counts.set(sharer, n);
     const shareId = `${sharer}:${n}`;
-    this.shares.set(sharer, { shareId, sharer, startedAt: now, audio: spec.audio, w: spec.w, h: spec.h, origin });
+    this.shares.set(sharer, { shareId, sharer, startedAt: now, audio: spec.audio, w: spec.w, h: spec.h, drawing: true, origin });
     return { ok: true, shareId };
   }
 
@@ -49,6 +49,20 @@ export class ShareRegistry {
 
   has(sharer: string): boolean {
     return this.shares.has(sharer);
+  }
+
+  /** Lets others draw on the sharer's share, or not. False when the sharer has no share. */
+  setDrawing(sharer: string, on: boolean): boolean {
+    const s = this.shares.get(sharer);
+    if (!s) return false;
+    s.drawing = on;
+    return true;
+  }
+
+  /** The running share with this id, if any. */
+  byId(shareId: string): ShareRecord | undefined {
+    for (const s of this.shares.values()) if (s.shareId === shareId) return s;
+    return undefined;
   }
 
   /**

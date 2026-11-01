@@ -24,7 +24,7 @@ describe('ShareRegistry', () => {
     r.start('a', spec, 'open', ['a', 'b'], 10);
     const again = r.start('a', { audio: true, w: 1280, h: 720 }, 'open', ['a', 'b'], 99);
     expect(again).toEqual({ ok: true, shareId: 'a:1' });
-    expect(r.sharesOf(['a'])).toEqual([{ shareId: 'a:1', sharer: 'a', startedAt: 10, audio: true, w: 1280, h: 720 }]);
+    expect(r.sharesOf(['a'])).toEqual([{ shareId: 'a:1', sharer: 'a', startedAt: 10, audio: true, w: 1280, h: 720, drawing: true }]);
   });
 
   it('refuses a fourth share among the same members', () => {
@@ -84,5 +84,30 @@ describe('ShareRegistry', () => {
     expect(list.map((s) => s.sharer)).toEqual(['a', 'b']);
     expect(list[0]).not.toHaveProperty('origin');
     expect(r.sharesOf(['b']).map((s) => s.sharer)).toEqual(['b']);
+  });
+});
+
+describe('drawing on a share', () => {
+  const spec = { audio: false, w: 1920, h: 1080 };
+  it('starts with drawing on, and sharesOf says so', () => {
+    const r = new ShareRegistry();
+    r.start('a', spec, 'open', ['a', 'b'], 1);
+    expect(r.sharesOf(['a', 'b'])[0].drawing).toBe(true);
+  });
+  it('setDrawing changes it, and is false for someone who is not sharing', () => {
+    const r = new ShareRegistry();
+    r.start('a', spec, 'open', ['a', 'b'], 1);
+    expect(r.setDrawing('a', false)).toBe(true);
+    expect(r.sharesOf(['a'])[0].drawing).toBe(false);
+    expect(r.setDrawing('zed', false)).toBe(false);
+  });
+  it('finds a share by id until it ends', () => {
+    const r = new ShareRegistry();
+    const s = r.start('a', spec, 'open', ['a'], 1);
+    const id = s.ok ? s.shareId : '';
+    expect(r.byId(id)?.sharer).toBe('a');
+    expect(r.byId('nope')).toBeUndefined();
+    r.stop('a');
+    expect(r.byId(id)).toBeUndefined();
   });
 });

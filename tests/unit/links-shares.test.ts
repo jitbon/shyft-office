@@ -9,7 +9,7 @@ const player = (id: string, x: number, y: number): PlayerState =>
     x, y, a: 0, mode: '2d', moving: false,
   }) as PlayerState;
 
-const share: ShareInfo = { shareId: 'a:1', sharer: 'a', startedAt: 1, audio: false, w: 1920, h: 1080 };
+const share: ShareInfo = { shareId: 'a:1', sharer: 'a', startedAt: 1, audio: false, w: 1920, h: 1080, drawing: true };
 
 function setup(players: PlayerState[], shares: ShareInfo[]) {
   const sent: { id: string; msg: Extract<ServerMsg, { t: 'links' }> }[] = [];
@@ -55,5 +55,40 @@ describe('LinkEngine shares', () => {
     shares[0] = { ...share, w: 1280 };
     engine.update();
     expect(sent.length).toBe(n + 4);
+  });
+
+  it('gives conversation members distinct ink slots, only while there is a share', () => {
+    const shares: ShareInfo[] = [];
+    const { engine, sent } = setup([player('a', 15.5, 19.5), player('b', 16.5, 19.5)], shares);
+    engine.update();
+    expect(sent.at(-1)!.msg.conversation?.ink).toBeUndefined();
+    shares.push(share);
+    engine.update();
+    const ink = sent.filter((s) => s.id === 'a').at(-1)!.msg.conversation?.ink;
+    expect(Object.keys(ink!).sort()).toEqual(['a', 'b']);
+    expect(new Set(Object.values(ink!)).size).toBe(2);
+  });
+
+  it('keeps ink slots the same across ticks', () => {
+    const { engine, sent } = setup([player('a', 15.5, 19.5), player('b', 16.5, 19.5)], [share]);
+    engine.update();
+    const first = sent.filter((s) => s.id === 'b').at(-1)!.msg.conversation?.ink;
+    engine.update();
+    engine.update();
+    expect(sent.filter((s) => s.id === 'b').at(-1)!.msg.conversation?.ink).toEqual(first);
+    expect(sent.filter((s) => s.id === 'b').length).toBe(1);
+  });
+
+  it('keeps a member\'s ink slot when a share stops and another starts', () => {
+    const shares: ShareInfo[] = [share];
+    const { engine, sent } = setup([player('a', 15.5, 19.5), player('b', 16.5, 19.5), player('c', 17.5, 19.5)], shares);
+    engine.update();
+    const before = sent.filter((s) => s.id === 'b').at(-1)!.msg.conversation!.ink!;
+    shares.length = 0;
+    engine.update();
+    expect(sent.filter((s) => s.id === 'b').at(-1)!.msg.conversation?.ink).toBeUndefined();
+    shares.push({ ...share, shareId: 'a:2' });
+    engine.update();
+    expect(sent.filter((s) => s.id === 'b').at(-1)!.msg.conversation!.ink).toEqual(before);
   });
 });
