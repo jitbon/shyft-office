@@ -61,7 +61,7 @@ other than localhost the browser will not allow the camera, though chat and walk
 | | Top-down | First person |
 |---|---|---|
 | Move | WASD / arrows | W/S forward/back, A/D strafe |
-| Look | n/a | mouse (click to lock), ←/→, Q/E |
+| Look | n/a | mouse (click to lock): look around, up and down to about 60°; ←/→, Q/E turn |
 | Run | Shift | Shift |
 | Jump | Space | Space |
 | Switch view | Tab or V | Tab or V |
@@ -70,6 +70,8 @@ other than localhost the browser will not allow the camera, though chat and walk
 | Desk | click a desk · G walks to yours | F opens the desk in front of you · G |
 | Do Not Disturb | Ctrl/⌘+U | Ctrl/⌘+U |
 | Zoom | +/- or scroll | n/a |
+
+Looking up and down is mouse only. "Invert mouse up/down" is in the "Click to look around" hint.
 
 ## Making your own characters
 

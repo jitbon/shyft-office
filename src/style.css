@@ -291,6 +291,17 @@ body.building #buildBtn { display: none; }
   border-radius: var(--radius-pill);
   padding: 10px 18px;
   pointer-events: none;
+  text-align: center;
+}
+#lockHint .invertLook {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font: 700 12px/1.2 var(--font);
+  color: var(--muted);
+  cursor: pointer;
+  pointer-events: auto;
 }
 
 #join {

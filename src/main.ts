@@ -32,10 +32,13 @@ import { syncItems, onItemsChanged } from './items-client';
 import { Studio } from './studio/studio';
 import { onHelperStatus, setHelperStatus } from './studio/helper-ui';
 import { loadLayout, recompile } from './world-client';
+import { mouseLook, readInvert, writeInvert } from './look';
 
 const WALK_SPEED = 3.6; // tiles per second
 const TURN_SPEED = 2.6; // radians per second
 const MOUSE_SENS = 0.0028;
+let pitch = 0; // how far the view is tilted up (+) or down (-); only ever in this browser, level whenever first person opens
+let invertLook = readInvert();
 const NEARBY_RADIUS = 4;
 const BUBBLE_MS = 6000;
 
@@ -235,8 +238,19 @@ canvas.addEventListener('mousemove', (e) => {
   canvas.style.cursor = hoverDesk ? 'pointer' : '';
 });
 document.addEventListener('mousemove', (e) => {
-  if (mode === '3d' && document.pointerLockElement === canvas) me.a += e.movementX * MOUSE_SENS;
+  if (mode === '3d' && document.pointerLockElement === canvas) {
+    me.a += e.movementX * MOUSE_SENS;
+    pitch = mouseLook(pitch, e.movementY, invertLook, MOUSE_SENS);
+  }
 });
+const invertBox = $('invertLook') as HTMLInputElement;
+invertBox.checked = invertLook;
+invertBox.addEventListener('change', () => {
+  invertLook = invertBox.checked;
+  writeInvert(invertLook);
+  invertBox.blur(); // otherwise the keys keep going to the checkbox
+});
+$('invertLookLabel').addEventListener('click', (e) => e.stopPropagation()); // ticking it must not capture the mouse
 document.addEventListener('pointerlockchange', updateHints);
 
 chatInput.addEventListener('keydown', (e) => {
@@ -254,6 +268,7 @@ chatInput.addEventListener('keydown', (e) => {
 /** Opens or closes build mode. Build mode is a top-down view, so first person switches back first. */
 function toggleBuild() {
   keys.clear();
+  pitch = 0;
   if (!builder.active && mode === '3d') setMode('2d');
   builder.toggle();
   buildBtn.classList.toggle('on', builder.active);
@@ -592,6 +607,7 @@ function refreshShare() {
 
 function setMode(next: ViewMode) {
   mode = next;
+  if (mode === '3d') pitch = 0;
   if (mode === '2d' && document.pointerLockElement) document.exitPointerLock();
   document.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) => b.classList.toggle('on', b.dataset.mode === mode));
   updateHints();
@@ -602,7 +618,7 @@ function updateHints() {
   $('help').innerHTML =
     mode === '2d'
       ? '<b>WASD</b>/arrows move · <b>Shift</b> run · <b>Space</b> jump · <b>Tab</b> first person · <b>Enter</b> chat · <b>+/-</b> zoom · <b>M</b> mic · <b>C</b> camera · <b>G</b> my desk · click a desk'
-      : '<b>WASD</b> move · <b>mouse</b>/<b>←→</b> look · <b>Shift</b> run · <b>Space</b> jump · <b>Tab</b> top-down · <b>Enter</b> chat · <b>M</b> mic · <b>C</b> camera · <b>G</b> my desk · <b>F</b> desk menu';
+      : '<b>WASD</b> move · <b>mouse</b> look around · <b>←→</b> turn · <b>Shift</b> run · <b>Space</b> jump · <b>Tab</b> top-down · <b>Enter</b> chat · <b>M</b> mic · <b>C</b> camera · <b>G</b> my desk · <b>F</b> desk menu';
   updateLockHint();
 }
 
@@ -1020,7 +1036,7 @@ function render(now: number) {
   } else {
     raycaster.resize(w, h);
     raycaster.markers = deskMarkers();
-    const labels = raycaster.render(me, [...others.values()], Date.now());
+    const labels = raycaster.render(me, [...others.values()], Date.now(), pitch);
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(raycaster.canvas, 0, 0, w, h);
     // Labels and the minimap are laid out in CSS pixels.

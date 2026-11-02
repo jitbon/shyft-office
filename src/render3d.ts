@@ -12,6 +12,7 @@ import { makeCam, visibleFaces, worldMeshes, type ObjectMesh } from './mesh3d';
 import { bakedFloorCell } from './floorart';
 import { fillFace, fog, shade } from './raster';
 import { hopHeight } from '../shared/jump';
+import { horizonRow } from './look';
 import { walkFrame, type Player } from './types';
 
 const PLANE = 0.66; // camera plane half-width -> ~67 degree field of view
@@ -112,12 +113,12 @@ export class Raycaster {
   }
 
   /** Renders the view from `me` and returns where to draw name tags (framebuffer coords). */
-  render(me: Player, others: Player[], now = 0): Label[] {
+  render(me: Player, others: Player[], now = 0, pitch = 0): Label[] {
     const { w, h, pix, depth } = this;
     const eye = EYE_Z + hopHeight(me.jumpAt, now);
     depth.fill(Infinity);
-    const half = h / 2;
     const K = w / (2 * PLANE); // projection scale: pixels per world unit at distance 1
+    const horizon = horizonRow(h, K, pitch); // the row where floor meets ceiling; the middle of the picture when level
     const px = me.x, py = me.y;
     const dirX = Math.cos(me.a), dirY = Math.sin(me.a);
     const planeX = -dirY * PLANE, planeY = dirX * PLANE;
@@ -142,7 +143,7 @@ export class Raycaster {
       }
     };
     for (let y = 0; y < h; y++) {
-      const dy = y + 0.5 - half;
+      const dy = y + 0.5 - horizon;
       if (dy > 0) floorRow(y, (K * eye) / dy, this.floorCells, this.floorCells[0]);
       else if (dy < 0) floorRow(y, (K * (CEILING_Z - eye)) / -dy, this.ceilCells, this.ceil.plain);
     }
@@ -174,7 +175,7 @@ export class Raycaster {
       const dist = Math.max(0.0001, side === 0 ? sdx - ddx : sdy - ddy);
       const dist32 = dist;
       const unit = K / dist; // pixels per tile of height at this distance
-      const top = half - (CEILING_Z - eye) * unit, bottom = half + eye * unit;
+      const top = horizon - (CEILING_Z - eye) * unit, bottom = horizon + eye * unit;
       const y0 = Math.max(0, Math.floor(top)), y1 = Math.min(h, Math.ceil(bottom));
 
       let wallX = side === 0 ? py + dist * rdy : px + dist * rdx;
@@ -187,7 +188,7 @@ export class Raycaster {
       const plain = this.walls['#'];
       const f = fog(dist) * (side === 1 ? 0.82 : 1);
       for (let y = y0; y < y1; y++) {
-        const z = eye + (half - (y + 0.5)) / unit; // height on the wall at this pixel
+        const z = eye + (horizon - (y + 0.5)) / unit; // height on the wall at this pixel
         const t = z <= 1 ? tex : plain;
         const v = z <= 1 ? 1 - z : 1 - (z - 1 - Math.floor(z - 1));
         const ty = Math.min(TEX - 1, Math.max(0, (v * TEX) | 0));
@@ -206,7 +207,7 @@ export class Raycaster {
       if (cam.invDet * (-cam.planeY * dx + cam.planeX * dy) < -2) continue; // well behind us
       for (const face of visibleFaces(m.faces, px, py, eye)) {
         const tex = this.mats[face.mat] ?? viewTexture(face.mat, now) ?? (isStyleMat(face.mat) ? materialFor(face.mat) : null);
-        if (tex) fillFace(target, face, cam, K, half, tex, eye); // a custom sheet that is still loading has no texture yet
+        if (tex) fillFace(target, face, cam, K, horizon, tex, eye); // a custom sheet that is still loading has no texture yet
       }
     }
 
@@ -229,7 +230,7 @@ export class Raycaster {
       const screenX = (w / 2) * (1 + tX / tY);
       const unit = K / tY;
       const sw = s.art.w * unit, sh = s.art.h * unit;
-      const bottom = half + unit * (eye - hopHeight(s.player?.jumpAt, now)); // feet on the floor, or in the air mid-jump
+      const bottom = horizon + unit * (eye - hopHeight(s.player?.jumpAt, now)); // feet on the floor, or in the air mid-jump
       const top = bottom - sh;
       const left = screenX - sw / 2;
       const x0 = Math.max(0, Math.floor(left)), x1 = Math.min(w, Math.ceil(left + sw));
@@ -261,7 +262,7 @@ export class Raycaster {
       const screenX = (w / 2) * (1 + tX / tY);
       const cx = Math.round(screenX);
       // Float just above the desk top: x is the screen column, y the height above the floor point.
-      const ly = half + (K / tY) * (eye - 0.9);
+      const ly = horizon + (K / tY) * (eye - 0.9);
       const row = Math.min(h - 1, Math.max(0, Math.round(ly)));
       // Off screen, or hidden behind a wall (the desk's own faces are within half a tile of its marker).
       if (cx < 0 || cx >= w || tY > depth[row * w + cx] + 0.6) continue;
