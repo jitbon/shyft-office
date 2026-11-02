@@ -28,6 +28,8 @@ import { ShareRegistry } from './shares';
 import { OfficeState } from './office';
 import { loadSprites, noSprites, validateAvatarChoice } from './sprites';
 import { StateStore, loadState } from './store';
+import { loadCharacter } from './characters';
+import { DEFAULT_LOOK, validateLook } from '../shared/wardrobe';
 
 export interface ServerOptions {
   port: number;
@@ -75,7 +77,6 @@ const MIME: Record<string, string> = {
   '.ico': 'image/x-icon',
 };
 
-const HEX = /^#[0-9a-f]{6}$/i;
 /**
  * Call-setup frames bigger than this are dropped. With the voice, camera and screen slots one SDP is about 16 KB in Chrome,
  * and about 26 KB when both sides offer at once, so the limit leaves room (the socket's own limit is 64 KB).
@@ -87,14 +88,11 @@ const HEX = /^#[0-9a-f]{6}$/i;
 const MAX_RTC_BYTES = 48 * 1024;
 /** Call setup per connection in any one second: a full meeting sends a burst of offers and candidates, nothing like this much. */
 const MAX_RTC_PER_SECOND = 200;
+/** Character changes one connection may make in a second: each is a broadcast and a save. */
+const MAX_AVATARS_PER_SECOND = 4;
 const MAX_RTC_BYTES_PER_SECOND = 1024 * 1024;
 
-const cleanColor = (c: unknown, fallback: string) => (typeof c === 'string' && HEX.test(c) ? c : fallback);
-const cleanLook = (l: Partial<Look> | undefined): Look => ({
-  shirt: cleanColor(l?.shirt, '#3fa7d6'),
-  hair: cleanColor(l?.hair, '#2b1d14'),
-  skin: cleanColor(l?.skin, '#f1c27d'),
-});
+const cleanLook = (l: unknown): Look => validateLook(l, DEFAULT_LOOK);
 const cleanName = (n: unknown) => String(n ?? '').trim().slice(0, 24) || 'Guest';
 const num = (v: unknown, lo: number, hi: number, fallback: number) =>
   typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : fallback;
@@ -201,6 +199,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
   const lastJump = new Map<string, number>();
   /** When each connection last sent a `share` message, to keep it to four a second. */
   const shareTimes = new Map<string, number[]>();
+  const avatarTimes = new Map<string, number[]>();
   const rtcRecent = new Map<string, { at: number; bytes: number }[]>();
   /** Ink sent in the last second, per connection, and when it was last told to slow down. */
   const inkRecent = new Map<string, { at: number; pts: number }[]>();
@@ -270,6 +269,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     studioDraftCooldownMs: opts.studioDraftCooldownMs ?? 1000,
     uploadsPerMinute: opts.uploadsPerMinute ?? 10,
     catalog: () => currentCatalog(),
+    character: (memberId) => loadCharacter(office.characters, memberId, sprites.index),
     caller: (token) => {
       const c = token ? sessions.get(token) : undefined;
       return c && { memberId: c.p.memberId, name: c.p.name, isAdmin: c.isAdmin, guest: c.p.memberId.startsWith('eph-') };
@@ -414,6 +414,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         session: crypto.randomBytes(16).toString('hex'),
       };
       conns.set(ws, c);
+      office.saveCharacter(p.memberId, p.avatar);
       byId.set(p.id, c);
       sessions.set(c.session, c);
       send(ws, {
@@ -664,7 +665,14 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       lastWave.set(key, Date.now());
       sendTo(target.p.id, { t: 'notify', kind: 'wave', from: me.id, text: me.name, reply: !!msg.reply });
     } else if (msg.t === 'avatar') {
+      // Each change is a broadcast and a save: past a few a second the rest are dropped.
+      const now = Date.now();
+      const recent = (avatarTimes.get(me.id) ?? []).filter((t) => now - t < 1000);
+      if (recent.length >= MAX_AVATARS_PER_SECOND) return;
+      recent.push(now);
+      avatarTimes.set(me.id, recent);
       me.avatar = validateAvatarChoice(msg.avatar, sprites.index, me.look);
+      office.saveCharacter(me.memberId, me.avatar);
       broadcast({ t: 'presence', id: me.id, avatar: me.avatar }); // the sender too, in case we corrected it
     } else if (msg.t === 'share') {
       const now = Date.now();
@@ -755,6 +763,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     byId.delete(c.p.id);
     lastJump.delete(c.p.id);
     shareTimes.delete(c.p.id);
+    avatarTimes.delete(c.p.id);
     rtcRecent.delete(c.p.id);
     inkRecent.delete(c.p.id);
     inkSlowAt.delete(c.p.id);

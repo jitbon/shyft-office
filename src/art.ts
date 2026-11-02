@@ -3,6 +3,8 @@ import type { AvatarChoice, Layer, Look, SpriteIndex } from '../shared/protocol'
 import { COLS, LAYER_ORDER, ROW_DIRS } from '../shared/sprites';
 import { PALETTE as P, light, mix, shade } from './palette';
 import { TILE } from './scale';
+import { rect, round } from './wardrobe/draw';
+import { paintCharacter } from './wardrobe/paint';
 
 export { TILE };
 /** Texels per side of a first-person texture: one art pixel per texel, the same as a map tile. */
@@ -39,22 +41,10 @@ export function hash(x: number, y: number) {
 }
 
 type Ctx = CanvasRenderingContext2D;
-const rect = (ctx: Ctx, color: string, x: number, y: number, w: number, h: number) => {
-  ctx.fillStyle = color;
-  ctx.fillRect(x, y, w, h);
-};
-/** A rectangle with its four corner pixels cut off. */
-const round = (ctx: Ctx, color: string, x: number, y: number, w: number, h: number) => {
-  rect(ctx, color, x + 1, y, w - 2, h);
-  rect(ctx, color, x, y + 1, w, h - 2);
-};
 const SHADOW = 'rgba(0, 0, 0, 0.16)';
 
 // ---------------------------------------------------------------- avatars
 
-const PANTS = '#3b4a7a';
-const SHOE = '#2f2a38';
-const EYE = '#2a2233';
 
 export interface Avatar {
   /** TILE x TILE canvases, 4 walk frames per direction (2D view). */
@@ -92,134 +82,22 @@ function flipped(c: HTMLCanvasElement): HTMLCanvasElement {
   return out;
 }
 
-interface Tones {
-  skin: string; skinD: string; hair: string; hairL: string; hairD: string;
-  shirt: string; shirtL: string; shirtD: string; blush: string; mouth: string;
-}
-
-function tonesOf(look: Look): Tones {
-  return {
-    skin: look.skin, skinD: shade(look.skin, 0.16),
-    hair: look.hair, hairL: light(look.hair, 0.3), hairD: shade(look.hair, 0.3),
-    shirt: look.shirt, shirtL: light(look.shirt, 0.2), shirtD: shade(look.shirt, 0.25),
-    blush: mix(look.skin, '#e8708a', 0.45), mouth: mix(look.skin, '#8f3b3b', 0.6),
-  };
-}
-
-/** Facing the camera, or away from it. `step` is +1 / -1 on the walking frames and 0 when standing. */
-function paintFrontOrBack(ctx: Ctx, t: Tones, back: boolean, step: number) {
-  // Legs and shoes: the stepping leg reaches a pixel lower, the other lifts.
-  for (const [x0, off] of [[10, step], [17, -step]]) {
-    const bottom = 27 + off;
-    rect(ctx, PANTS, x0, 25, 5, bottom - 24);
-    rect(ctx, shade(PANTS, 0.25), x0 + 4, 25, 1, bottom - 24);
-    rect(ctx, SHOE, x0, bottom + 1, 5, 2);
-    rect(ctx, light(SHOE, 0.25), x0, bottom + 1, 5, 1);
-  }
-  rect(ctx, PANTS, 10, 25, 12, 2);
-  rect(ctx, shade(PANTS, 0.3), 10, 24, 12, 1);
-
-  // Arms swing opposite to the legs.
-  for (const [x, dy] of [[6, -step], [23, step]]) {
-    const y = 17 + dy;
-    rect(ctx, t.shirt, x, y, 3, 6);
-    rect(ctx, t.shirtL, x, y, 3, 1);
-    rect(ctx, t.shirtD, x, y + 5, 3, 1);
-    rect(ctx, t.skin, x, y + 6, 3, 2);
-  }
-
-  // Torso.
-  round(ctx, t.shirt, 9, 16, 14, 8);
-  rect(ctx, t.shirtL, 10, 16, 12, 1);
-  rect(ctx, t.shirtD, 9, 22, 14, 2);
-  rect(ctx, t.shirtD, 21, 17, 2, 5);
-  rect(ctx, t.skinD, 14, 15, 4, 1); // neck
-
-  if (back) {
-    round(ctx, t.hair, 9, 1, 14, 13);
-    rect(ctx, t.hairL, 11, 2, 5, 1);
-    rect(ctx, t.hairL, 10, 3, 2, 2);
-    rect(ctx, t.hairD, 10, 11, 12, 3);
-    rect(ctx, t.hairD, 15, 6, 2, 3);
-    rect(ctx, t.skinD, 14, 14, 4, 1);
-    return;
-  }
-  rect(ctx, t.skinD, 15, 16, 2, 1); // collar
-  round(ctx, t.skin, 9, 3, 14, 12);
-  rect(ctx, t.skinD, 21, 11, 1, 3);
-  rect(ctx, t.skinD, 11, 14, 10, 1);
-  round(ctx, t.hair, 9, 1, 14, 6);
-  rect(ctx, t.hair, 9, 7, 2, 4);
-  rect(ctx, t.hair, 21, 7, 2, 4);
-  rect(ctx, t.hair, 11, 7, 6, 2);
-  rect(ctx, t.hair, 17, 7, 4, 1);
-  rect(ctx, t.hairL, 11, 2, 5, 1);
-  rect(ctx, t.hairL, 10, 3, 2, 1);
-  rect(ctx, t.hairD, 11, 6, 10, 1);
-  for (const x of [12, 18]) {
-    rect(ctx, t.hairD, x, 9, 2, 1);
-    rect(ctx, EYE, x, 10, 2, 2);
-    rect(ctx, '#ffffff', x, 10, 1, 1);
-  }
-  rect(ctx, t.blush, 11, 12, 2, 1);
-  rect(ctx, t.blush, 19, 12, 2, 1);
-  rect(ctx, t.mouth, 15, 13, 2, 1);
-}
-
-/** Facing right; the left-facing frames are this one mirrored. */
-function paintSide(ctx: Ctx, t: Tones, step: number) {
-  const frontLeg = 14 + 3 * step, backLeg = 14 - 3 * step;
-  const frontArm = 14 - 3 * step, backArm = 14 + 3 * step;
-  // Far arm and leg first, in shadow.
-  rect(ctx, t.shirtD, backArm, 17, 4, 6);
-  rect(ctx, t.skinD, backArm, 23, 4, 2);
-  rect(ctx, shade(PANTS, 0.25), backLeg, 25, 4, 3);
-  rect(ctx, SHOE, backLeg, 28, 6, 2);
-  // Hips, near leg.
-  rect(ctx, PANTS, 11, 25, 10, 2);
-  rect(ctx, shade(PANTS, 0.3), 11, 24, 10, 1);
-  rect(ctx, PANTS, frontLeg, 25, 4, 3);
-  rect(ctx, SHOE, frontLeg, 28, 6, 2);
-  rect(ctx, light(SHOE, 0.25), frontLeg, 28, 6, 1);
-  // Torso and the near arm.
-  round(ctx, t.shirt, 11, 16, 10, 8);
-  rect(ctx, t.shirtL, 12, 16, 8, 1);
-  rect(ctx, t.shirtD, 11, 22, 10, 2);
-  rect(ctx, t.shirt, frontArm, 17, 4, 6);
-  rect(ctx, t.shirtL, frontArm, 17, 4, 1);
-  rect(ctx, t.skin, frontArm, 23, 4, 2);
-  // Head.
-  rect(ctx, t.skinD, 13, 15, 4, 1);
-  round(ctx, t.skin, 10, 3, 12, 12);
-  rect(ctx, t.skin, 22, 11, 1, 2);
-  rect(ctx, t.skinD, 22, 12, 1, 1);
-  rect(ctx, t.skinD, 15, 9, 2, 3);
-  round(ctx, t.hair, 9, 1, 13, 6);
-  rect(ctx, t.hair, 9, 7, 6, 6);
-  rect(ctx, t.hair, 15, 7, 6, 2);
-  rect(ctx, t.hairL, 11, 2, 5, 1);
-  rect(ctx, t.hairL, 10, 3, 2, 1);
-  rect(ctx, t.hairD, 9, 11, 6, 2);
-  rect(ctx, t.hairD, 18, 9, 3, 1);
-  rect(ctx, EYE, 18, 10, 2, 2);
-  rect(ctx, '#ffffff', 18, 10, 1, 1);
-  rect(ctx, t.blush, 17, 12, 2, 1);
-  rect(ctx, t.mouth, 19, 13, 2, 1);
-}
-
-function drawCharacter(look: Look, dir: Dir, frame: number): HTMLCanvasElement {
+/** One frame of a built-in character, uncached: for the picker's option tiles. */
+export function drawCharacter(look: Look, dir: Dir, frame: number): HTMLCanvasElement {
   const [c, ctx] = makeCanvas(TILE, TILE);
   const step = frame === 1 ? 1 : frame === 3 ? -1 : 0;
-  const t = tonesOf(look);
-  if (dir === 'down' || dir === 'up') paintFrontOrBack(ctx, t, dir === 'up', step);
-  else paintSide(ctx, t, step);
+  paintCharacter(ctx, look, dir === 'down' ? 'front' : dir === 'up' ? 'back' : 'side', step);
   return outline(dir === 'left' ? flipped(c) : c);
 }
+
+/** Every field counts, in a fixed order, so changing any part draws a new character. */
+const LOOK_FIELDS = ['shirt', 'hair', 'skin', 'hairStyle', 'face', 'top', 'bottom', 'bottomColor', 'shoes', 'accessory', 'accessoryColor', 'outfit', 'outfitColor'] as const;
+const lookKey = (look: Look) => JSON.stringify(LOOK_FIELDS.map((f) => look[f] ?? null));
 
 const avatarCache = new Map<string, Avatar>();
 
 export function makeAvatar(look: Look): Avatar {
-  const key = `${look.shirt}${look.hair}${look.skin}`;
+  const key = lookKey(look);
   const cached = avatarCache.get(key);
   if (cached) return cached;
 

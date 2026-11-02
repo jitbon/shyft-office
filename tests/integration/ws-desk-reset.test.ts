@@ -78,7 +78,7 @@ describe('desks reset by the redesign', () => {
     writeOldOffice([m]);
     server = await startTestServer({ dataDir });
     expect(JSON.parse(fs.readFileSync(path.join(dataDir, 'office-state.json'), 'utf8'))).toMatchObject({
-      version: 3, deskClaims: {}, deskNotice: [{ memberId: m, kind: 'reset' }],
+      version: 4, deskClaims: {}, deskNotice: [{ memberId: m, kind: 'reset' }],
     });
 
     let a = await join('M', m);

@@ -53,8 +53,12 @@ other than localhost the browser will not allow the camera, though chat and walk
   **Ctrl+U** (**⌘+U** on a Mac) toggles Do Not Disturb: nobody can start a conversation with you, and your mic and
   camera stay off. People can still **ring** you (accept and you land next to them) or **wave**: use the buttons
   next to a name in the people list.
-- **Your character.** On the join screen choose *Built-in* (pick colours) or *Custom* (a character, or parts, from
-  the sheets in `sprites/`).
+- **Your character.** On the join screen choose *Built-in* or *Custom* (a character, or parts, from the sheets in
+  `sprites/`). Built-in has hairstyles, faces, skin tones, tops, bottoms, shoes and accessories, each with colours
+  where they make sense, a live front, side and back preview, and **Surprise me** for a matching random look. The
+  *Outfits* tab has 20+ whole-figure costumes grouped by season (snowman, Santa, scarecrow, zombie, leprechaun and
+  more, all available all year), and **Back to my character** returns to the parts underneath. Members' characters
+  are saved on the server and follow them to any device; guests' stay in their browser. Custom sheets are unchanged.
 
 ### Controls
 

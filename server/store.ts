@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DESKS, areaById, deskById, podById, type PodMode } from '../shared/map';
-import { MAX_MEMBER_ID } from '../shared/member';
+import { MAX_MEMBER_ID, isUuid } from '../shared/member';
+import type { AvatarChoice } from '../shared/protocol';
 
 export interface DeskClaim {
   memberId: string;
@@ -18,7 +19,7 @@ export interface DeskNotice {
 
 /** Everything that must survive a server restart. */
 export interface StoredState {
-  version: 3;
+  version: 4;
   /** Desk object id -> who holds it. A member holds at most one desk. */
   deskClaims: Record<string, DeskClaim>;
   /** Admin overrides of a pod's mode. */
@@ -31,18 +32,39 @@ export interface StoredState {
   buildingEnabled: boolean;
   /** Whether an admin has switched the item helper on. Off until they do. */
   helperEnabled: boolean;
+  /** Each real member's chosen character, so it follows them to any device. At most MAX_CHARACTERS, the oldest dropped. */
+  characters: Record<string, StoredCharacter>;
 }
+
+export interface StoredCharacter {
+  avatar: AvatarChoice;
+  /** Epoch ms of the last change. */
+  at: number;
+}
+
+export const MAX_CHARACTERS = 2000;
 
 const FILE = 'office-state.json';
 const MAX_ALLOWED = 200;
 const MAX_NOTICE = 500;
 
 export const emptyState = (): StoredState => ({
-  version: 3, deskClaims: {}, podModes: {}, areaAllowed: {}, deskNotice: [], buildingEnabled: true, helperEnabled: false,
+  version: 4, deskClaims: {}, podModes: {}, areaAllowed: {}, deskNotice: [], buildingEnabled: true, helperEnabled: false, characters: {},
 });
 
 const realMember = (id: unknown): id is string =>
   typeof id === 'string' && !!id && id.length <= MAX_MEMBER_ID && !id.startsWith('eph-');
+
+/** Saved characters worth keeping: UUID members only, each with an avatar and a time, the newest MAX_CHARACTERS. */
+function readCharacters(raw: unknown): Record<string, StoredCharacter> {
+  const list: [string, StoredCharacter][] = [];
+  for (const [id, c] of Object.entries((raw ?? {}) as Record<string, Partial<StoredCharacter> | null>)) {
+    if (!isUuid(id) || typeof c !== 'object' || c === null || typeof c.avatar !== 'object' || c.avatar === null) continue;
+    list.push([id, { avatar: c.avatar, at: typeof c.at === 'number' ? c.at : 0 }]);
+  }
+  list.sort((a, b) => b[1].at - a[1].at);
+  return Object.fromEntries(list.slice(0, MAX_CHARACTERS));
+}
 
 /** Notices worth keeping: real members, each kind once per member, at most MAX_NOTICE. */
 function notices(list: DeskNotice[]): DeskNotice[] {
@@ -81,6 +103,7 @@ function deskFor(key: string): string | undefined {
  * - A version 2 file keys claims by `<pod>:<seatX>,<seatY>`: each is moved to the desk whose chair is there.
  *   A claim with no such desk is released and its holder told.
  * - A version 3 file keys claims by desk id. Claims for desks that are gone are released and their holders told.
+ * - A version 4 file is the same plus each member's saved character (checked again when it is used).
  */
 export function parseState(raw: unknown): StoredState {
   const out = emptyState();
@@ -94,7 +117,8 @@ export function parseState(raw: unknown): StoredState {
     roomAllowLists(r.areaAllowed, out);
     return out;
   }
-  if (version !== 2 && version !== 3) return out;
+  if (version !== 2 && version !== 3 && version !== 4) return out;
+  const current = version === 3 || version === 4;
 
   const lost: DeskNotice[] = [];
   const claims: { deskId: string; claim: DeskClaim }[] = [];
@@ -131,14 +155,15 @@ export function parseState(raw: unknown): StoredState {
   if (version === 2 && Array.isArray(r.deskResetNotice)) {
     for (const id of r.deskResetNotice) kept.push({ memberId: id as string, kind: 'reset' });
   }
-  if (version === 3 && Array.isArray(r.deskNotice)) {
+  if (current && Array.isArray(r.deskNotice)) {
     for (const n of r.deskNotice as Partial<DeskNotice>[]) {
       if (n && (n.kind === 'reset' || n.kind === 'removed')) kept.push({ memberId: n.memberId as string, kind: n.kind });
     }
   }
   out.deskNotice = notices([...kept, ...lost]);
-  out.buildingEnabled = version === 3 ? r.buildingEnabled !== false : true;
-  out.helperEnabled = version === 3 && r.helperEnabled === true;
+  out.buildingEnabled = current ? r.buildingEnabled !== false : true;
+  out.helperEnabled = current && r.helperEnabled === true;
+  if (version === 4) out.characters = readCharacters(r.characters);
   return out;
 }
 

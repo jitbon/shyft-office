@@ -16,13 +16,14 @@ afterEach(() => {
 });
 
 const sample = (): StoredState => ({
-  version: 3,
+  version: 4,
   deskClaims: { [DESKS[0].id]: { memberId: 'm1', name: 'Sam', claimedAt: 100 } },
   podModes: { [DESK_PODS[0].id]: 'cubicle' },
   areaAllowed: { 'meet-b': ['m1', 'm2'] },
   deskNotice: [{ memberId: 'm9', kind: 'removed' }],
   buildingEnabled: false,
   helperEnabled: true,
+  characters: {},
 });
 
 describe('state store', () => {
@@ -122,7 +123,8 @@ describe('desks reset by the redesign (version 1 files)', () => {
   it('releases every claim and pod mode, keeps the room allow-lists, and lists each holder once', () => {
     fs.writeFileSync(file(), JSON.stringify(v1()));
     expect(parseState(v1())).toEqual({
-      version: 3,
+      version: 4,
+      characters: {},
       deskClaims: {},
       podModes: {},
       areaAllowed: { 'meet-b': ['m1'] },
@@ -136,7 +138,7 @@ describe('desks reset by the redesign (version 1 files)', () => {
     fs.writeFileSync(file(), JSON.stringify(v1()));
     const first = loadState(dir);
     expect(first.deskNotice.map((n) => n.memberId)).toEqual(['m1', 'm2']);
-    expect(JSON.parse(fs.readFileSync(file(), 'utf8'))).toMatchObject({ version: 3, deskClaims: {} });
+    expect(JSON.parse(fs.readFileSync(file(), 'utf8'))).toMatchObject({ version: 4, deskClaims: {} });
     // Someone claims a desk, the notice list is emptied, and the next start keeps both.
     const later: StoredState = { ...first, deskClaims: { [DESKS[0].id]: { memberId: 'm1', name: 'Sam', claimedAt: 99 } }, deskNotice: [] };
     const store = new StateStore(dir);
@@ -194,7 +196,7 @@ describe('desk claims move to desk ids (version 2 files)', () => {
   it('saves the upgrade at once as version 3', () => {
     fs.writeFileSync(file(), JSON.stringify(v2()));
     loadState(dir);
-    expect(JSON.parse(fs.readFileSync(file(), 'utf8'))).toMatchObject({ version: 3, buildingEnabled: true });
+    expect(JSON.parse(fs.readFileSync(file(), 'utf8'))).toMatchObject({ version: 4, buildingEnabled: true });
   });
 
   it('cleans a version 3 notice list: real members only, no repeats, at most 500', () => {
@@ -219,7 +221,7 @@ describe('desk claims move to desk ids (version 2 files)', () => {
 
   it('starts a fresh install with nothing to tell anyone', () => {
     expect(loadState(dir)).toEqual(emptyState());
-    expect(emptyState()).toEqual({ version: 3, deskClaims: {}, podModes: {}, areaAllowed: {}, deskNotice: [], buildingEnabled: true, helperEnabled: false });
+    expect(emptyState()).toEqual({ version: 4, characters: {}, deskClaims: {}, podModes: {}, areaAllowed: {}, deskNotice: [], buildingEnabled: true, helperEnabled: false });
     expect(fs.existsSync(file())).toBe(false);
   });
 });

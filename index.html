@@ -56,21 +56,34 @@
     <div id="join">
       <form id="joinForm" class="card">
         <h1>Shyft Office</h1>
-        <canvas id="preview" width="96" height="96"></canvas>
         <label>Name <input id="name" maxlength="24" placeholder="Your name" autocomplete="nickname" /></label>
         <div class="tabs">
           <button type="button" id="tabBuiltIn" class="on">Built-in</button>
           <button type="button" id="tabCustom">Custom</button>
         </div>
-        <div id="panelBuiltIn">
-          <div class="row"><span>Shirt</span><div id="shirts" class="swatches"></div></div>
-          <div class="row"><span>Hair</span><div id="hairs" class="swatches"></div></div>
-          <div class="row"><span>Skin</span><div id="skins" class="swatches"></div></div>
-        </div>
-        <div id="panelCustom" hidden>
-          <div class="row"><span>Whole</span><div id="sheets" class="choices"></div></div>
-          <div id="layers"></div>
-          <div id="customHint" class="hint"></div>
+        <div id="picker">
+          <div id="previewCol">
+            <canvas id="preview" width="96" height="96"></canvas>
+            <div id="views">
+              <canvas id="pvFront" width="64" height="64" title="Front"></canvas>
+              <canvas id="pvSide" width="64" height="64" title="Side"></canvas>
+              <canvas id="pvBack" width="64" height="64" title="Back"></canvas>
+            </div>
+            <button type="button" id="surprise">Surprise me</button>
+            <button type="button" id="backToMe" hidden>Back to my character</button>
+          </div>
+          <div id="pickerBody">
+            <div id="panelBuiltIn">
+              <div id="cats" role="tablist"></div>
+              <div id="options"></div>
+              <div id="colors"></div>
+            </div>
+            <div id="panelCustom" hidden>
+              <div class="row"><span>Whole</span><div id="sheets" class="choices"></div></div>
+              <div id="layers"></div>
+              <div id="customHint" class="hint"></div>
+            </div>
+          </div>
         </div>
         <button type="submit" class="primary">Enter office</button>
         <button type="button" id="joinCancel" hidden>Cancel</button>

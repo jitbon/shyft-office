@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PNG } from 'pngjs';
 import type { AvatarChoice, Look, SpriteIndex } from '../shared/protocol';
+import { validateLook } from '../shared/wardrobe';
 import { ID_RE, LAYER_ORDER, validateSheet, validateSidecar } from '../shared/sprites';
 
 export interface LoadedSprites {
@@ -87,8 +88,6 @@ export function loadSprites(dir: string): LoadedSprites {
   return out;
 }
 
-const HEX = /^#[0-9a-f]{6}$/i;
-
 /**
  * Turns whatever a client sent into an avatar the office can show. Anything that does not match a loaded
  * sheet in the right slot falls back to the built-in character, so nobody can show a broken avatar.
@@ -114,9 +113,7 @@ export function validateAvatarChoice(choice: unknown, index: SpriteIndex, look: 
     return picked.body ? { kind: 'layers', ids: picked } : builtIn; // a layered character needs a body
   }
   if (c.kind === 'built-in' && typeof c.look === 'object' && c.look !== null) {
-    const l = c.look as Partial<Look>;
-    const color = (v: unknown, fallback: string) => (typeof v === 'string' && HEX.test(v) ? v : fallback);
-    return { kind: 'built-in', look: { shirt: color(l.shirt, look.shirt), hair: color(l.hair, look.hair), skin: color(l.skin, look.skin) } };
+    return { kind: 'built-in', look: validateLook(c.look, look) };
   }
   return builtIn;
 }

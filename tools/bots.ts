@@ -9,6 +9,7 @@ import path from 'node:path';
 import { WebSocket } from 'ws';
 import type { ClientMsg, ServerMsg } from '../shared/protocol';
 import { MAX_OPEN } from '../shared/proximity';
+import { byKind, randomLook } from '../shared/wardrobe';
 import { startServer, type RunningServer } from '../server/app';
 
 const TICK_BUDGET_MS = 20;
@@ -60,7 +61,15 @@ async function connect(url: string, n: number, group: number): Promise<Bot> {
     ws.once('open', () => resolve());
     ws.once('error', reject);
   });
-  const join: ClientMsg = { t: 'join', name: `Bot ${n}`, look: { shirt: '#3fa7d6', hair: '#2b1d14', skin: '#f1c27d' }, memberId: crypto.randomUUID() };
+  // Every bot has its own look, and every fifth wears an outfit, so the clients have a crowd of different characters to draw.
+  const look = randomLook();
+  if (n % 5 === 0) {
+    const outfits = byKind('outfit');
+    const o = outfits[Math.floor(Math.random() * outfits.length)];
+    look.outfit = o.id;
+    if (o.colors) look.outfitColor = o.colors[Math.floor(Math.random() * o.colors.length)];
+  }
+  const join: ClientMsg = { t: 'join', name: `Bot ${n}`, look, avatar: { kind: 'built-in', look }, memberId: crypto.randomUUID() };
   ws.send(JSON.stringify(join));
   while (!bot.id) await sleep(10);
   return bot;

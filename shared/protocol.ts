@@ -17,6 +17,19 @@ export interface Look {
   shirt: string;
   hair: string;
   skin: string;
+  /** Wardrobe ids (shared/wardrobe.ts). A missing part is the default one, so a 3-field look is today's character. */
+  hairStyle?: string;
+  face?: string;
+  top?: string;
+  bottom?: string;
+  bottomColor?: string;
+  shoes?: string;
+  /** Absent means none. */
+  accessory?: string;
+  accessoryColor?: string;
+  /** When set it replaces the parts, which are kept underneath. */
+  outfit?: string;
+  outfitColor?: string;
 }
 
 export type Layer = 'full' | 'body' | 'bottom' | 'top' | 'hair' | 'accessory';

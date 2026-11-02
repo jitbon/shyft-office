@@ -48,7 +48,7 @@ describe('upgrading an office saved before the builder existed', () => {
 
     // The saved file is version 3 straight away, and the old office is the first published layout.
     expect(JSON.parse(fs.readFileSync(path.join(dataDir, 'office-state.json'), 'utf8'))).toMatchObject({
-      version: 3,
+      version: 4,
       deskClaims: { 'desk-5-13': { memberId: ana }, 'desk-33-14': { memberId: ben } },
       podModes: { 'pod-2': 'cubicle' },
       areaAllowed: { 'meet-b': [ana] },

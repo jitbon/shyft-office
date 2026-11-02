@@ -3,6 +3,8 @@
 // session token from `welcome`, so the server knows who is asking without trusting anything the client says.
 import type http from 'node:http';
 import type { Catalog } from '../shared/catalog';
+import { isUuid } from '../shared/member';
+import type { AvatarChoice } from '../shared/protocol';
 import { itemAt, parseLayoutWith } from '../shared/catalog';
 import { checkLayout, type Problem } from '../shared/layout-check';
 import { mergeLayouts } from '../shared/layout-merge';
@@ -39,6 +41,8 @@ export interface ApiContext {
   /** Tell everyone the list of custom objects changed. */
   objectsChanged(): void;
   catalog(): Catalog;
+  /** A member's saved character, checked against today's wardrobe. */
+  character(memberId: string): AvatarChoice | undefined;
   /** The caller behind a session token, if that connection is still open. */
   caller(token: string | undefined): ApiCaller | undefined;
   buildingEnabled(): boolean;
@@ -77,7 +81,7 @@ function ratePasses(kind: 'publish' | 'draft' | 'studio', ctx: ApiContext, membe
 const perMinuteLog = new WeakMap<ApiContext, Map<string, number[]>>();
 
 /** True when `memberId` may do `what` now, given `limit` a minute; records the attempt. */
-function perMinute(what: 'upload' | 'item' | 'helper', ctx: ApiContext, memberId: string, limit: number): boolean {
+function perMinute(what: 'upload' | 'item' | 'helper' | 'character', ctx: ApiContext, memberId: string, limit: number): boolean {
   let m = perMinuteLog.get(ctx);
   if (!m) perMinuteLog.set(ctx, (m = new Map()));
   const now = Date.now();
@@ -142,6 +146,16 @@ const counts = (r: Revision) => ({ objects: r.layout.objects.length, rooms: r.la
 /** Answers one `/api/*` request. */
 export async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, url: URL, ctx: ApiContext): Promise<void> {
   try {
+    // The join screen asks before there is a session, so this is the one route that needs none (research R6): it
+    // returns only the look saved for the id asked about, which is what others see in the office anyway.
+    if (req.method === 'GET' && url.pathname === '/api/character') {
+      if (!perMinute('character', ctx, req.socket.remoteAddress ?? '', 10)) throw new HttpError(429, { error: 'slow-down' });
+      const id = req.headers['x-shyft-member'];
+      const memberId = typeof id === 'string' ? id.toLowerCase() : '';
+      const avatar = isUuid(memberId) ? ctx.character(memberId) : undefined;
+      if (!avatar) throw new HttpError(404, { error: 'no-character' });
+      return reply(res, 200, { avatar });
+    }
     const token = req.headers['x-shyft-session'];
     const who = ctx.caller(typeof token === 'string' ? token : undefined);
     if (!who) throw new HttpError(401, { error: 'no-session' });

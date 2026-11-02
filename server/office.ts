@@ -1,9 +1,10 @@
 import {
   AREAS, DESKS, DESK_PODS, areaAt, areaById, deskAt, deskById, podById, type PodMode,
 } from '../shared/map';
-import type { OfficeSnapshot, PlayerStatus } from '../shared/protocol';
+import type { AvatarChoice, OfficeSnapshot, PlayerStatus } from '../shared/protocol';
 import type { OfficeInput } from '../shared/proximity';
-import { emptyState, type DeskClaim, type DeskNotice, type DeskNoticeKind, type StoredState } from './store';
+import { saveCharacter } from './characters';
+import { emptyState, type DeskClaim, type DeskNotice, type DeskNoticeKind, type StoredCharacter, type StoredState } from './store';
 
 export type EntryDenied = 'full' | 'restricted' | 'locked';
 
@@ -52,6 +53,8 @@ export class OfficeState {
   buildingEnabled = true;
   /** Whether the item helper is switched on. Saved. */
   helperEnabled = false;
+  /** Saved characters by member id. Saved. */
+  characters: Record<string, StoredCharacter> = {};
 
   constructor(
     private players: () => Iterable<OfficePlayer>,
@@ -66,6 +69,7 @@ export class OfficeState {
     this.deskNotice = [...state.deskNotice];
     this.buildingEnabled = state.buildingEnabled;
     this.helperEnabled = state.helperEnabled;
+    this.characters = { ...state.characters };
     this.onChange = opts.onChange ?? (() => {});
   }
 
@@ -93,6 +97,11 @@ export class OfficeState {
     return true;
   }
 
+  /** Remembers a real member's character for their next visit. */
+  saveCharacter(memberId: string, avatar: AvatarChoice) {
+    if (saveCharacter(this.characters, memberId, avatar, Date.now())) this.onChange();
+  }
+
   /** Saves the state in the background, after a change that is not made through a method here. */
   save() {
     this.onChange();
@@ -101,13 +110,14 @@ export class OfficeState {
   /** Everything that must survive a restart. */
   persistState(): StoredState {
     return {
-      version: 3,
+      version: 4,
       deskClaims: Object.fromEntries(this.claims),
       podModes: Object.fromEntries(this.podModeOverride),
       areaAllowed: Object.fromEntries([...this.allowedOverride].map(([id, set]) => [id, [...set]])),
       deskNotice: [...this.deskNotice],
       buildingEnabled: this.buildingEnabled,
       helperEnabled: this.helperEnabled,
+      characters: this.characters,
     };
   }
 

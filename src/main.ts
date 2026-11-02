@@ -5,6 +5,7 @@ import type {
   AvatarChoice, ChatScope, ClientMsg, ConversationInfo, ItemInfo, Link, PlayerState, PlayerStatus, ServerMsg, ViewMode,
 } from '../shared/protocol';
 import { expireStatus } from '../shared/status';
+import { CATALOG } from '../shared/wardrobe';
 import { loadAvatar, makeAvatar } from './art';
 import { Builder } from './builder/builder';
 import { CallPanel, type TileInfo } from './callPanel';
@@ -33,6 +34,9 @@ import { Studio } from './studio/studio';
 import { onHelperStatus, setHelperStatus } from './studio/helper-ui';
 import { loadLayout, recompile } from './world-client';
 import { mouseLook, readInvert, writeInvert } from './look';
+
+// Art checks in tools/e2e read the avatar painter from the page.
+if (location.search.includes('arthash')) (window as unknown as { __shyftArt: unknown }).__shyftArt = { makeAvatar, CATALOG };
 
 const WALK_SPEED = 3.6; // tiles per second
 const TURN_SPEED = 2.6; // radians per second
