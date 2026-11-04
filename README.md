@@ -53,6 +53,16 @@ other than localhost the browser will not allow the camera, though chat and walk
   **Ctrl+U** (**⌘+U** on a Mac) toggles Do Not Disturb: nobody can start a conversation with you, and your mic and
   camera stay off. People can still **ring** you (accept and you land next to them) or **wave**: use the buttons
   next to a name in the people list.
+- **Office Arena.** Press **Arena** and **Start match** for a round-based team game played right in the office, in first
+  person. Others press **Join** (from the Arena button or the banner everyone sees). Up to 10 can play, split into the
+  Blue and Orange teams. The host presses **Begin** (it needs 2 players) and can **Stop** the match (everyone goes back
+  where they stood), **Reset** it to round 1, and anyone can **Leave**. Each round has a 15 s buy phase, then a 2 min
+  play phase; **click** to fire, **B** opens the shop in the buy phase and hold **K** for the scoreboard. Tag the other
+  team out (18 damage a shot with the free Stapler Popper; better blasters and a vest cost money) to win the round: first
+  team to 5 round wins takes the match. Money comes from tags, and more from winning (some for losing). Players only
+  meet each other: they are kept out of meeting rooms and other people's desks, can't build, share a screen or change
+  character, and their voice is separate from the rest of the office. Everyone else keeps working, and is never hit or
+  told anything private; they see team rings, tracers and a banner. Admins can switch the Arena off in the Admin panel.
 - **Your character.** On the join screen choose *Built-in* or *Custom* (a character, or parts, from the sheets in
   `sprites/`). Built-in has hairstyles, faces, skin tones, tops, bottoms, shoes and accessories, each with colours
   where they make sense, a live front, side and back preview, and **Surprise me** for a matching random look. The
@@ -74,6 +84,7 @@ other than localhost the browser will not allow the camera, though chat and walk
 | Desk | click a desk · G walks to yours | F opens the desk in front of you · G |
 | Do Not Disturb | Ctrl/⌘+U | Ctrl/⌘+U |
 | Zoom | +/- or scroll | n/a |
+| Arena (in a match) | overview only: no moving or firing | click fires · B shop · hold K scoreboard |
 
 Looking up and down is mouse only. "Invert mouse up/down" is in the "Click to look around" hint.
 
@@ -175,6 +186,8 @@ Rooms and desk pods are set up in build mode (see above); the office that ships 
   furniture, rooms and pods), the furniture it can hold, and the compiler that turns a layout into the tile grid, areas and
   desks. `shared/map.ts` exposes the current compiled office; both views, the server and collision all read it.
   `layout-check.ts` and `layout-merge.ts` find what is wrong with a layout and merge two edits; `objects.ts` is the custom object format. `items.ts` is the item (parts) format, `readymade.ts` the ready-made list, `items-edit.ts` what happens to placed copies when an item changes.
+- `shared/arena.ts`: every rule of Office Arena (teams, phases, damage, money, shots, spawns) as pure functions; `server/arena.ts`
+  runs the one match and `src/arena/` draws its HUD, shop, scoreboard and panel.
 - `shared/proximity.ts`: who is linked to whom (distance, walls, private areas, desks, status). Pure functions.
 - `shared/protocol.ts`: WebSocket message types. `shared/sprites.ts`, `shared/status.ts`: the sprite-sheet format and
   status rules, shared by the server, the browser and the command-line tools.

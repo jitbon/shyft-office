@@ -34,6 +34,8 @@ export interface StoredState {
   helperEnabled: boolean;
   /** Each real member's chosen character, so it follows them to any device. At most MAX_CHARACTERS, the oldest dropped. */
   characters: Record<string, StoredCharacter>;
+  /** Whether Office Arena can be started. Absent means yes; an additive field, so the version is unchanged. */
+  arenaEnabled?: boolean;
 }
 
 export interface StoredCharacter {
@@ -166,6 +168,7 @@ export function parseState(raw: unknown): StoredState {
   out.buildingEnabled = current ? r.buildingEnabled !== false : true;
   out.helperEnabled = current && r.helperEnabled === true;
   if (version === 4) out.characters = readCharacters(r.characters);
+  if (current && r.arenaEnabled === false) out.arenaEnabled = false;
   return out;
 }
 

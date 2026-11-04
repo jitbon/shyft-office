@@ -57,7 +57,15 @@ export interface Marker {
   dot?: string;
 }
 
+/** Office Arena tracers and tag-out puffs, as the first-person view draws them. `color` is a packed 0xAABBGGRR pixel. */
+export interface Fx3D {
+  tracers: { x0: number; y0: number; x1: number; y1: number; color: number }[];
+  puffs: { x: number; y: number; t: number }[];
+}
+
 export class Raycaster {
+  /** Set before each render: tracers and puffs to draw over the scene. */
+  fx: Fx3D | null = null;
   /** Set before each render: map points that should get a floating label. */
   markers: Marker[] = [];
   /** Filled by each render: where on the (small) framebuffer each visible marker landed. */
@@ -269,7 +277,46 @@ export class Raycaster {
       this.markerLabels.push({ x: screenX, y: ly, text: m.text, dot: m.dot });
     }
 
+    if (this.fx) this.drawFx(this.fx, { px, py, invDet, dirX, dirY, planeX, planeY, K, horizon, eye });
+
     this.ctx.putImageData(this.img, 0, 0);
     return labels;
+  }
+
+  /** Tracers as lines of pixels and puffs as a few dots, each hidden by anything solid in front of it. */
+  private drawFx(
+    fx: Fx3D,
+    v: { px: number; py: number; invDet: number; dirX: number; dirY: number; planeX: number; planeY: number; K: number; horizon: number; eye: number },
+  ) {
+    const { w, h, pix, depth } = this;
+    const project = (x: number, y: number, z: number) => {
+      const dx = x - v.px, dy = y - v.py;
+      const tX = v.invDet * (v.dirY * dx - v.dirX * dy);
+      const tY = v.invDet * (-v.planeY * dx + v.planeX * dy);
+      return tY <= 0.1 ? null : { sx: (w / 2) * (1 + tX / tY), sy: v.horizon + (v.K / tY) * (v.eye - z), d: tY };
+    };
+    const plot = (sx: number, sy: number, d: number, color: number, size: number) => {
+      for (let yy = Math.round(sy) - size; yy <= Math.round(sy) + size; yy++) {
+        for (let xx = Math.round(sx) - size; xx <= Math.round(sx) + size; xx++) {
+          if (xx >= 0 && yy >= 0 && xx < w && yy < h && d < depth[yy * w + xx]) pix[yy * w + xx] = color;
+        }
+      }
+    };
+    for (const t of fx.tracers) {
+      const steps = Math.max(8, Math.ceil(Math.hypot(t.x1 - t.x0, t.y1 - t.y0) * 6));
+      for (let i = 0; i <= steps; i++) {
+        const f = i / steps;
+        const p = project(t.x0 + (t.x1 - t.x0) * f, t.y0 + (t.y1 - t.y0) * f, 0.4);
+        if (p) plot(p.sx, p.sy, p.d, t.color, p.d < 6 ? 1 : 0);
+      }
+    }
+    for (const puff of fx.puffs) {
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        const r = 0.1 + puff.t * 0.35;
+        const p = project(puff.x + Math.cos(a) * r, puff.y + Math.sin(a) * r, 0.3 + puff.t * 0.3);
+        if (p) plot(p.sx, p.sy, p.d, 0xfff7f5f5, Math.max(0, Math.round((v.K / p.d) * 0.03 * (1 - puff.t))));
+      }
+    }
   }
 }

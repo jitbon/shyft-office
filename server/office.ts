@@ -6,7 +6,7 @@ import type { OfficeInput } from '../shared/proximity';
 import { saveCharacter } from './characters';
 import { emptyState, type DeskClaim, type DeskNotice, type DeskNoticeKind, type StoredCharacter, type StoredState } from './store';
 
-export type EntryDenied = 'full' | 'restricted' | 'locked';
+export type EntryDenied = 'full' | 'restricted' | 'locked' | 'arena';
 
 /** The slice of a connected player that office rules need. */
 export interface OfficePlayer {
@@ -55,6 +55,12 @@ export class OfficeState {
   helperEnabled = false;
   /** Saved characters by member id. Saved. */
   characters: Record<string, StoredCharacter> = {};
+  /** Whether Office Arena can be started. Saved. */
+  arenaEnabled = true;
+  /** Whether a player is in an Office Arena match: they stay out of meeting rooms and other people's desks. */
+  inArena: (playerId: string) => boolean = () => false;
+  /** Ids of the players in a match, for the link rules. */
+  matchPlayers: () => ReadonlySet<string> = () => new Set();
 
   constructor(
     private players: () => Iterable<OfficePlayer>,
@@ -69,6 +75,7 @@ export class OfficeState {
     this.deskNotice = [...state.deskNotice];
     this.buildingEnabled = state.buildingEnabled;
     this.helperEnabled = state.helperEnabled;
+    this.arenaEnabled = state.arenaEnabled !== false;
     this.characters = { ...state.characters };
     this.onChange = opts.onChange ?? (() => {});
   }
@@ -118,6 +125,7 @@ export class OfficeState {
       buildingEnabled: this.buildingEnabled,
       helperEnabled: this.helperEnabled,
       characters: this.characters,
+      ...(this.arenaEnabled ? {} : { arenaEnabled: false }),
     };
   }
 
@@ -143,6 +151,13 @@ export class OfficeState {
    */
   checkEntry(p: OfficePlayer, fromX: number, fromY: number, toX: number, toY: number): EntryDenied | null {
     const to = areaAt(toX, toY);
+    // A match player stays out of meeting rooms and of desk spaces that are not their own.
+    if (this.inArena(p.id)) {
+      if (to?.private && to.id !== areaAt(fromX, fromY)?.id) return 'arena';
+      const own = this.deskOf(p.memberId);
+      const dk = deskAt(toX, toY);
+      if (dk && dk.id !== own && dk.id !== deskAt(fromX, fromY)?.id) return 'arena';
+    }
     if (to && to.id !== areaAt(fromX, fromY)?.id) {
       if (to.restricted) {
         const allowed = this.allowedFor(to.id).includes(p.memberId) || this.admitted.get(p.memberId)?.has(to.id);
@@ -308,6 +323,7 @@ export class OfficeState {
       locked,
       cubiclePods: new Set(DESK_PODS.filter((p) => this.podMode(p.id) === 'cubicle').map((p) => p.id)),
       deskLabels: new Map([...this.claims].map(([id, c]) => [id, `${c.name}'s desk`])),
+      match: this.matchPlayers(),
     };
   }
 

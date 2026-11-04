@@ -172,3 +172,38 @@ describe('desk pods', () => {
     expect(positionContext(SEAT_A.x, SEAT_A.y, 'owner', {})).toBe('open');
   });
 });
+
+describe('match players (Office Arena)', () => {
+  const match = (...ids: string[]): OfficeInput => ({ match: new Set(ids) });
+
+  it('never links a player with a non-player standing together', () => {
+    const r = computeLinks([player('a', 15.5, Y), player('b', 16.5, Y)], new Set(), {}, match('a'));
+    expect(r.links).toHaveLength(0);
+    expect(r.conversations).toHaveLength(0);
+  });
+  it('links two players as on the open floor', () => {
+    const r = computeLinks([player('a', 15.5, Y), player('b', 16.5, Y)], new Set(), {}, match('a', 'b'));
+    expect(r.links).toHaveLength(1);
+    expect(r.conversations[0].members).toEqual(['a', 'b']);
+  });
+  it('leaves two non-players alone while others are in a match', () => {
+    const r = computeLinks([player('a', 15.5, Y), player('b', 16.5, Y), player('c', 15.5, 20.5)], new Set(), {}, match('c'));
+    expect(r.conversations).toHaveLength(1);
+    expect(r.conversations[0].members).toEqual(['a', 'b']);
+  });
+  it('splits a chain so a player and a non-player never share a conversation', () => {
+    const r = computeLinks([player('a', 15.5, Y), player('b', 17, Y), player('c', 20.5, Y)], new Set(), {}, match('a', 'c'));
+    // a and c are too far apart to link directly, and b is on the other side of the match.
+    expect(r.conversations).toEqual([]);
+  });
+  it('splits ambient hearing between players and non-players', () => {
+    const seated = [player('a', 6.5, 12.5), player('b', 10.5, 12.5)]; // two seats of pod 1
+    expect(computeLinks(seated).links.some((l) => l.kind === 'ambient')).toBe(true);
+    expect(computeLinks(seated, new Set(), {}, { match: new Set(['a']) }).links).toHaveLength(0);
+    expect(computeLinks(seated, new Set(), {}, { match: new Set(['a', 'b']) }).links).toHaveLength(1);
+  });
+  it('is identical to before with no match set, or an empty one', () => {
+    const ps = [player('a', 15.5, Y), player('b', 16.5, Y)];
+    expect(computeLinks(ps, new Set(), {}, { match: new Set() })).toEqual(computeLinks(ps));
+  });
+});

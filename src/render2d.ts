@@ -256,7 +256,15 @@ export interface MapView {
   dpr: number;
 }
 
+/** What Office Arena adds to the top-down picture: a team ring under each match player, tracer lines, and tag-out puffs. */
+export interface Arena2D {
+  ring(id: string): string | null;
+  tracers: { x0: number; y0: number; x1: number; y1: number; color: string; alpha: number }[];
+  puffs: { x: number; y: number; t: number }[];
+}
+
 export class Renderer2D {
+  arena: Arena2D | null = null;
   map = buildMapCanvas();
   /** The world the map canvas shows. */
   private built: World = getWorld();
@@ -334,6 +342,32 @@ export class Renderer2D {
    * `w` and `h` are the canvas size in device pixels; `k` is the zoom in device pixels per art pixel and `dpr`
    * the device pixel ratio. The world is drawn in device pixels, text and labels in CSS pixels.
    */
+  private drawArenaFx(ctx: CanvasRenderingContext2D, ox: number, oy: number, s: number, k: number) {
+    const arena = this.arena!;
+    ctx.lineCap = 'round';
+    for (const t of arena.tracers) {
+      ctx.globalAlpha = t.alpha;
+      ctx.strokeStyle = t.color;
+      ctx.lineWidth = Math.max(2, 1.5 * k);
+      ctx.beginPath();
+      ctx.moveTo(ox + t.x0 * s, oy + t.y0 * s);
+      ctx.lineTo(ox + t.x1 * s, oy + t.y1 * s);
+      ctx.stroke();
+    }
+    for (const p of arena.puffs) {
+      ctx.globalAlpha = 1 - p.t;
+      ctx.fillStyle = '#f5f5f7';
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        const r = (0.15 + p.t * 0.5) * s;
+        ctx.beginPath();
+        ctx.arc(ox + p.x * s + Math.cos(a) * r, oy + p.y * s + Math.sin(a) * r - s * 0.4, (1 - p.t) * 3 * k, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
   render(ctx: CanvasRenderingContext2D, w: number, h: number, k: number, dpr: number, me: Player, players: Player[], now: number) {
     const s = TILE * k;
     const mapW = this.built.w * s, mapH = this.built.h * s;
@@ -366,6 +400,14 @@ export class Renderer2D {
       // Mid-jump the body rises up the screen and its shadow on the floor shrinks.
       const lift = hopHeight(p.jumpAt, clock) * s;
       const shrink = 1 - lift / (s * 1.4);
+      const ring = this.arena?.ring(p.id);
+      if (ring) {
+        ctx.strokeStyle = ring;
+        ctx.lineWidth = Math.max(2, 1.5 * k);
+        ctx.beginPath();
+        ctx.ellipse(fx, fy, 13 * k, 6 * k, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
       ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
       ctx.beginPath();
       ctx.ellipse(fx, fy, 10 * k * shrink, 4 * k * shrink, 0, 0, Math.PI * 2);
@@ -374,6 +416,8 @@ export class Renderer2D {
       const img = p.avatar.frames[dirFromAngle(p.a)][walkFrame(p)];
       ctx.drawImage(img, Math.round(fx - (TILE / 2) * k), Math.round(fy - lift - (TILE - 2) * k), TILE * k, TILE * k);
     }
+
+    if (this.arena) this.drawArenaFx(ctx, ox, oy, s, k);
 
     // Spotlight the private room you're in, like a meeting with the door closed.
     const zone = this.noSpotlight ? null : areaAt(me.x, me.y);

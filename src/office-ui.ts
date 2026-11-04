@@ -14,7 +14,7 @@ export interface OfficeUiDeps {
   me(): { memberId: string; x: number; y: number; a: number };
 }
 
-type Reason = 'full' | 'restricted' | 'locked';
+type Reason = 'full' | 'restricted' | 'locked' | 'arena';
 type NotifyMsg = Extract<ServerMsg, { t: 'notify' }>;
 
 let deps: OfficeUiDeps = { send: () => {}, people: () => [], me: () => ({ memberId: '', x: 0, y: 0, a: 0 }) };
@@ -70,8 +70,9 @@ export function onSprites(msg: Extract<ServerMsg, { t: 'sprites' }>) {
   renderAdmin();
 }
 
-export function setAdminState(areaAllowed: Record<string, string[]>, building?: boolean, helper?: boolean) {
+export function setAdminState(areaAllowed: Record<string, string[]>, building?: boolean, helper?: boolean, arena?: boolean) {
   adminAllowed = areaAllowed;
+  if (arena !== undefined) arenaEnabled = arena;
   if (building !== undefined) buildingEnabled = building;
   if (helper !== undefined) helperEnabled = helper;
   renderAdmin();
@@ -139,7 +140,9 @@ export function blocked(reason: Reason, areaId?: string, deskId?: string) {
   lastBlockedAt.set(key, performance.now());
 
   const name = area?.name ?? 'That room';
-  if (reason === 'full') {
+  if (reason === 'arena') {
+    notice('Not during a match', { key, ttlMs: 2000 });
+  } else if (reason === 'full') {
     notice(`${name} is full`, { key, ttlMs: 2500 });
   } else if (reason === 'restricted' && area) {
     notice(`${name} is for invited people only.`, {
@@ -431,6 +434,8 @@ function renderDeskCard() {
 let buildingEnabled = true;
 /** Whether an admin has switched the item helper on (the admin panel shows and sets it). */
 let helperEnabled = false;
+/** Whether Office Arena can be started (the admin panel shows and sets it). */
+let arenaEnabled = true;
 
 onHelperStatus(() => renderAdmin());
 
@@ -464,6 +469,17 @@ function renderAdmin() {
   switchLabel.append(document.createTextNode('Members can edit the office '), box);
   building.append(Object.assign(document.createElement('b'), { textContent: 'Building' }), switchLabel);
   panel.append(building);
+
+  const arenaGroup = document.createElement('div');
+  arenaGroup.className = 'group';
+  const arenaLabel = document.createElement('label');
+  const arenaBox = document.createElement('input');
+  arenaBox.type = 'checkbox';
+  arenaBox.checked = arenaEnabled;
+  arenaBox.onchange = () => deps.send({ t: 'admin', op: 'arena', enabled: arenaBox.checked });
+  arenaLabel.append(document.createTextNode('Office Arena can be played '), arenaBox);
+  arenaGroup.append(Object.assign(document.createElement('b'), { textContent: 'Arena' }), arenaLabel);
+  panel.append(arenaGroup);
 
   // The item helper: off until an admin switches it on, and only possible when the server has a service set up.
   const helper = document.createElement('div');

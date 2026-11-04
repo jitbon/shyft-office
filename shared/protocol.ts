@@ -13,6 +13,9 @@ export interface ItemInfo {
 
 export type ViewMode = '2d' | '3d';
 
+export type Team = 'blue' | 'orange';
+export type Phase = 'lobby' | 'buy' | 'play' | 'roundEnd' | 'matchEnd';
+
 export interface Look {
   shirt: string;
   hair: string;
@@ -135,7 +138,8 @@ export type AdminOp =
   | { op: 'reloadSprites' }
   | { op: 'areaAllowed'; areaId: string; memberIds: string[] }
   | { op: 'building'; enabled: boolean }
-  | { op: 'helper'; enabled: boolean };
+  | { op: 'helper'; enabled: boolean }
+  | { op: 'arena'; enabled: boolean };
 
 export type ClientMsg =
   | { t: 'join'; name: string; look: Look; memberId?: string; avatar?: AvatarChoice; admin?: string }
@@ -155,6 +159,12 @@ export type ClientMsg =
   | { t: 'wave'; to: string; reply?: boolean }
   /** A jump: only for show (it changes no position and no rule). */
   | { t: 'jump' }
+  /** Office Arena: start, join or leave a match; the host begins, stops or resets it. */
+  | { t: 'arena'; op: 'start' | 'join' | 'leave' | 'begin' | 'stop' | 'reset' }
+  /** A shot along the aim angle `a`. The server decides what it hits. */
+  | { t: 'fire'; a: number; seq: number }
+  /** Buy a blaster or the vest during the buy phase. */
+  | { t: 'buy'; item: string }
   /** Start sharing the screen, or (while sharing) update its size or sound; `on: false` stops. */
   | { t: 'share'; on: true; audio: boolean; w: number; h: number }
   | { t: 'share'; on: false }
@@ -197,7 +207,7 @@ export type ServerMsg =
   | { t: 'links'; links: Link[]; conversation: ConversationInfo | null; full?: boolean }
   | { t: 'rtc'; from: string; data: unknown }
   /** Sent only to the sharer: the share started, or why it is not running. */
-  | { t: 'shareState'; on: boolean; shareId?: string; reason?: 'full' | 'dnd' | 'left' | 'stopped' }
+  | { t: 'shareState'; on: boolean; shareId?: string; reason?: 'full' | 'dnd' | 'left' | 'stopped' | 'arena' }
   /** Someone's pen points on a share you can see. Relayed at once; the server keeps nothing. */
   | { t: 'ink'; from: string; shareId: string; strokeId: number; seq: number; pts: number[]; end?: true; keep?: true }
   | { t: 'inkClear'; from: string; shareId: string; scope: 'mine' | 'all' }
@@ -213,8 +223,8 @@ export type ServerMsg =
       avatar?: AvatarChoice;
     }
   | ({ t: 'office' } & OfficeSnapshot)
-  | { t: 'correct'; x: number; y: number; reason: 'full' | 'restricted' | 'locked'; areaId?: string; deskId?: string }
-  | { t: 'teleport'; x: number; y: number; reason: 'ring' | 'desk' | 'layout' }
+  | { t: 'correct'; x: number; y: number; reason: 'full' | 'restricted' | 'locked' | 'arena'; areaId?: string; deskId?: string }
+  | { t: 'teleport'; x: number; y: number; reason: 'ring' | 'desk' | 'layout' | 'arena'; a?: number; back?: true }
   /** A new layout was published: fetch `GET /api/layout?rev=<rev>`. */
   | { t: 'layout'; rev: number; by: { name: string }; at: number }
   /** The custom objects changed (one was added or removed). */
@@ -238,7 +248,42 @@ export type ServerMsg =
       reply?: boolean;
       text?: string;
     }
-  | { t: 'adminState'; areaAllowed: Record<string, string[]>; buildingEnabled?: boolean; helperEnabled?: boolean }
+  | {
+      t: 'adminState';
+      areaAllowed: Record<string, string[]>;
+      buildingEnabled?: boolean;
+      helperEnabled?: boolean;
+      arenaEnabled?: boolean;
+    }
+  /** To everyone when it changes: the match's public summary (no money, health or gear). */
+  | {
+      t: 'arena';
+      match: null | {
+        phase: Phase;
+        round: number;
+        wins: Record<Team, number>;
+        /** Milliseconds left in this phase. */
+        endsIn: number;
+        host: string;
+        teams: Record<string, Team>;
+        alive: string[];
+        /** Who took the round that just ended (set from the round-end phase on). */
+        lastWinner?: Team | 'draw';
+      };
+    }
+  /** To everyone: a visual tracer. Non-players draw it silently. */
+  | { t: 'arenaShot'; from: string; x0: number; y0: number; x1: number; y1: number; hit?: string }
+  /** To one player only: their own state and the events that involve them. */
+  | {
+      t: 'arenaYou';
+      health: number;
+      armour: number;
+      money: number;
+      gear: string;
+      event?: { kind: 'hit' | 'tagged' | 'tag' | 'bought' | 'refused'; by?: string; target?: string; seq?: number };
+    }
+  /** To match players only: the full scoreboard. */
+  | { t: 'arenaBoard'; rows: { id: string; team: Team; tags: number; tagOuts: number; money: number }[] }
   | {
       t: 'sprites';
       sprites: SpriteIndex;

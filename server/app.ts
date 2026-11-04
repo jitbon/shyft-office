@@ -7,7 +7,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import os from 'node:os';
 import { currentCatalog, setCustomObjects, setStudioItems } from '../shared/catalog';
 import {
-  AREAS, MAP_H, MAP_W, SPAWN, areaAt, areaById, deskAt, deskById, isBlocking, nearestFreeTile, nearestFreeTileNear, setWorld, validateOffice,
+  AREAS, MAP_H, MAP_W, SPAWN, areaAt, areaById, deskAt, deskById, getWorld, isBlocking, nearestFreeTile, nearestFreeTileNear, setWorld, validateOffice,
 } from '../shared/map';
 import { compileWorld } from '../shared/world';
 import type { ClientMsg, ItemInfo, Look, PlayerState, ServerMsg } from '../shared/protocol';
@@ -24,6 +24,8 @@ import { ItemsStore } from './items';
 import { pinnedVersions } from '../shared/items-edit';
 import { JUMP_COOLDOWN_MS } from '../shared/jump';
 import { LinkEngine } from './links';
+import { MatchEngine } from './arena';
+import { moveAllowed, type Timings } from '../shared/arena';
 import { ShareRegistry } from './shares';
 import { OfficeState } from './office';
 import { loadSprites, noSprites, validateAvatarChoice } from './sprites';
@@ -60,6 +62,10 @@ export interface ServerOptions {
   studioDraftCooldownMs?: number;
   /** How often idle connections are pinged. One that misses a whole round is dropped, so a dead one goes within twice this. */
   pingMs?: number;
+  /** Phase lengths for Office Arena; tests shorten them. */
+  arenaTimings?: Timings;
+  /** Fixed team spawn points for Office Arena, instead of ones worked out from the layout. For tests. */
+  arenaSpawns?: Record<'blue' | 'orange', { x: number; y: number }[]>;
 }
 
 export interface RunningServer {
@@ -97,6 +103,9 @@ const PER_SECOND = {
   share: { count: 4 },
   /** Pen ink (weight is points). */
   ink: { count: INK_RATE_MSGS, weight: INK_RATE_POINTS },
+  /** Office Arena controls and purchases; a shot is limited by its gear's fire rate instead. */
+  arena: { count: 10 },
+  fire: { count: 30 },
 } satisfies Record<string, Limit>;
 
 const cleanLook = (l: unknown): Look => validateLook(l, DEFAULT_LOOK);
@@ -110,6 +119,8 @@ interface Conn {
   isAdmin: boolean;
   /** Token this connection sends to the HTTP API. */
   session: string;
+  /** Office Arena speed check: the last place and time a move was measured from. */
+  moveFrom: { x: number; y: number; at: number };
 }
 
 export function startServer(opts: ServerOptions): Promise<RunningServer> {
@@ -277,7 +288,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     character: (memberId) => loadCharacter(office.characters, memberId, sprites.index),
     caller: (token) => {
       const c = token ? sessions.get(token) : undefined;
-      return c && { memberId: c.p.memberId, name: c.p.name, isAdmin: c.isAdmin, guest: c.p.memberId.startsWith('eph-') };
+      return c && { memberId: c.p.memberId, name: c.p.name, isAdmin: c.isAdmin, guest: c.p.memberId.startsWith('eph-'), inMatch: arena.isPlayer(c.p.id) };
     },
     buildingEnabled: () => office.buildingEnabled,
     applyPublish: (layout, by) => applyPublish(layout, by),
@@ -314,6 +325,35 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     for (const { sharer, reason } of shares.sweep(placeOf)) sendTo(sharer, { t: 'shareState', on: false, reason });
   };
   links.start(opts.tickMs ?? 200);
+  const MATCH_REFUSED = 'Not during a match';
+  const arena = new MatchEngine({
+    pose: (id) => {
+      const p = byId.get(id)?.p;
+      return p ? { x: p.x, y: p.y, a: p.a, mode: p.mode } : null;
+    },
+    send: sendTo,
+    broadcast: (msg) => broadcast(msg),
+    teleport: (id, x, y, a, back) => {
+      const c = byId.get(id);
+      if (!c) return;
+      c.p.x = x;
+      c.p.y = y;
+      c.p.a = a;
+      c.moveFrom = { x, y, at: Date.now() };
+      send(c.ws, { t: 'teleport', x, y, a, reason: 'arena', ...(back ? { back: true as const } : {}) });
+      broadcast({ t: 'state', id, x, y, a, mode: c.p.mode, moving: false }, c.ws);
+      if (areaAt(x, y)?.id !== undefined) broadcastOffice();
+    },
+    world: () => getWorld(),
+    enabled: () => office.arenaEnabled,
+    changed: () => links.update(),
+    timings: opts.arenaTimings,
+    spawns: opts.arenaSpawns,
+  });
+  office.inArena = (id) => arena.isPlayer(id);
+  office.matchPlayers = () => arena.players();
+  const arenaTimer = setInterval(() => arena.tick(), opts.arenaTimings ? 20 : 100);
+  arenaTimer.unref();
   /** Rings waiting for an answer, keyed `<ringer>><recipient>`, and when each was last sent. */
   const rings = new Map<string, number>();
   const lastWave = new Map<string, number>();
@@ -325,7 +365,9 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (!c.isAdmin) return;
     const areaAllowed: Record<string, string[]> = {};
     for (const a of AREAS) if (a.restricted) areaAllowed[a.id] = office.allowedFor(a.id);
-    send(c.ws, { t: 'adminState', areaAllowed, buildingEnabled: office.buildingEnabled, helperEnabled: office.helperEnabled });
+    send(c.ws, {
+      t: 'adminState', areaAllowed, buildingEnabled: office.buildingEnabled, helperEnabled: office.helperEnabled, arenaEnabled: office.arenaEnabled,
+    });
   };
 
   wss.on('connection', (ws) => {
@@ -414,6 +456,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         p,
         isAdmin: !!opts.adminToken && typeof msg.admin === 'string' && msg.admin === opts.adminToken,
         session: crypto.randomBytes(16).toString('hex'),
+        moveFrom: { x: p.x, y: p.y, at: Date.now() },
       };
       conns.set(ws, c);
       office.saveCharacter(p.memberId, p.avatar);
@@ -440,6 +483,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (deskNotice) send(ws, { t: 'notify', kind: deskNotice === 'reset' ? 'deskReset' : 'deskRemoved', ...(deskNotice === 'removed' ? { text: 'Your desk was removed in the latest office update.' } : {}) });
       broadcast({ t: 'join', player: p }, ws);
       broadcastOffice();
+      send(ws, arena.summary());
       console.log(`+ ${p.name} (${conns.size} online)`);
       return;
     }
@@ -449,18 +493,28 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (msg.t === 'state') {
       const nx = num(msg.x, 0, MAP_W, me.x);
       const ny = num(msg.y, 0, MAP_H, me.y);
+      const inMatch = arena.isPlayer(me.id);
+      if (inMatch && Math.hypot(nx - me.x, ny - me.y) > 0.001) {
+        // A match player cannot move while frozen (buy phase, tagged out) or from the top-down view, and cannot move faster than running.
+        if (arena.frozen(me.id) || msg.mode !== '3d' || !moveAllowed(conn.moveFrom, { x: nx, y: ny }, Date.now() - conn.moveFrom.at)) {
+          send(ws, { t: 'correct', x: me.x, y: me.y, reason: 'arena' });
+          return;
+        }
+      }
       const denied = office.checkEntry(me, me.x, me.y, nx, ny);
       if (denied) {
         // Keep the old position and snap the client back.
         send(ws, {
           t: 'correct', x: me.x, y: me.y, reason: denied,
-          ...(denied === 'locked' ? { deskId: deskAt(nx, ny)?.id } : { areaId: areaAt(nx, ny)?.id }),
+          ...(denied === 'locked' ? { deskId: deskAt(nx, ny)?.id } : denied === 'arena' ? {} : { areaId: areaAt(nx, ny)?.id }),
         });
         return;
       }
       const before = areaAt(me.x, me.y)?.id ?? null;
       me.x = nx;
       me.y = ny;
+      // The speed is measured from a checkpoint that advances at most every 200 ms, so many small hops add up to no more than running.
+      if (inMatch && Date.now() - conn.moveFrom.at >= 200) conn.moveFrom = { x: nx, y: ny, at: Date.now() };
       me.a = num(msg.a, -1e6, 1e6, me.a);
       me.mode = msg.mode === '3d' ? '3d' : '2d';
       me.moving = !!msg.moving;
@@ -508,6 +562,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (guest) sendTo(guest.p.id, { t: 'notify', kind: 'deskInvite', from: me.id, deskId: invited.deskId, text: me.name });
       else send(ws, { t: 'notify', kind: 'error', text: 'They are not online right now.' });
     } else if (msg.t === 'walkToDesk') {
+      if (arena.isPlayer(me.id)) return void send(ws, { t: 'notify', kind: 'error', text: MATCH_REFUSED });
       const own = office.deskOf(me.memberId);
       const deskId = typeof msg.deskId === 'string' ? msg.deskId : own;
       const desk = deskId ? deskById(deskId) : undefined;
@@ -573,6 +628,13 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
           broadcastHelper();
           for (const o of conns.values()) sendAdminState(o); // every admin's switch shows the new setting
         }
+      } else if (msg.op === 'arena' && typeof msg.enabled === 'boolean') {
+        if (office.arenaEnabled !== msg.enabled) {
+          office.arenaEnabled = msg.enabled;
+          office.save();
+        }
+        if (!msg.enabled) arena.shutdown();
+        for (const o of conns.values()) sendAdminState(o);
       } else if (msg.op === 'areaAllowed' && areaById(String(msg.areaId)) && Array.isArray(msg.memberIds)) {
         const ids = msg.memberIds.filter(isUuid).slice(0, 200);
         office.setAreaAllowed(msg.areaId, ids.map((m) => m.toLowerCase()));
@@ -647,6 +709,10 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       const tell = (ok: boolean, text?: string) =>
         sendTo(ringer.p.id, { t: 'notify', kind: 'ringResult', from: me.id, ok, ...(text ? { text } : {}) });
       if (!msg.accept) return tell(false, `${me.name} is not coming over.`);
+      if (arena.isPlayer(me.id)) {
+        send(ws, { t: 'notify', kind: 'error', text: MATCH_REFUSED });
+        return tell(false, `${me.name} is in a match.`);
+      }
       const taken = new Set([...conns.values()].map((c) => `${Math.floor(c.p.x)},${Math.floor(c.p.y)}`));
       const spot = nearestFreeTileNear(ringer.p.x, ringer.p.y, taken);
       if (!spot) return tell(false, 'There is no room beside you.');
@@ -667,6 +733,11 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     } else if (msg.t === 'avatar') {
       // Each change is a broadcast and a save: past a few a second the rest are dropped.
       if (!within('avatar', me.id)) return;
+      if (arena.isPlayer(me.id)) {
+        send(ws, { t: 'notify', kind: 'error', text: MATCH_REFUSED });
+        send(ws, { t: 'presence', id: me.id, avatar: me.avatar });
+        return;
+      }
       me.avatar = validateAvatarChoice(msg.avatar, sprites.index, me.look);
       office.saveCharacter(me.memberId, me.avatar);
       broadcast({ t: 'presence', id: me.id, avatar: me.avatar }); // the sender too, in case we corrected it
@@ -682,6 +753,10 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         return;
       }
       if (me.status.kind === 'dnd') return void send(ws, { t: 'shareState', on: false, reason: 'dnd' });
+      if (arena.isPlayer(me.id)) {
+        send(ws, { t: 'notify', kind: 'error', text: MATCH_REFUSED });
+        return void send(ws, { t: 'shareState', on: false, reason: 'arena' });
+      }
       // A share the rules would end at the next tick (alone on the open floor, away from a desk) is not accepted at all.
       const origin = positionContext(me.x, me.y, me.id, office.linkInput());
       const place = placeOf(me.id);
@@ -691,6 +766,27 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       const started = shares.start(me.id, share, origin, links.conversationMembers(me.id), now);
       send(ws, started.ok ? { t: 'shareState', on: true, shareId: started.shareId } : { t: 'shareState', on: false, reason: started.reason });
       links.update();
+    } else if (msg.t === 'arena') {
+      if (!within('arena', me.id)) return;
+      const fail = (text: string | null) => text && send(ws, { t: 'notify', kind: 'error', text });
+      if (msg.op === 'start' || msg.op === 'join') {
+        // Joining stops a screen share first: the share cannot go on inside a match.
+        if (shares.stop(me.id)) {
+          send(ws, { t: 'shareState', on: false, reason: 'arena' });
+          links.update();
+        }
+        fail(msg.op === 'start' ? arena.start(me.id) : arena.join(me.id));
+      } else if (msg.op === 'leave') fail(arena.leave(me.id));
+      else if (msg.op === 'begin') fail(arena.begin(me.id));
+      else if (msg.op === 'stop') fail(arena.stop(me.id, conn.isAdmin));
+      else if (msg.op === 'reset') fail(arena.reset(me.id));
+    } else if (msg.t === 'fire') {
+      if (!within('fire', me.id) || !Number.isFinite(msg.a) || !Number.isInteger(msg.seq)) return;
+      arena.fire(me.id, msg.a, msg.seq);
+    } else if (msg.t === 'buy') {
+      if (!within('arena', me.id) || typeof msg.item !== 'string') return;
+      const refused = arena.buy(me.id, msg.item);
+      if (refused) send(ws, { t: 'notify', kind: 'error', text: refused });
     } else if (msg.t === 'ink' || msg.t === 'inkClear' || msg.t === 'inkAllow') {
       handleInk(ws, me, msg);
     } else if (msg.t === 'rtc') {
@@ -747,6 +843,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     inkSlowCooldown.forget(c.p.id);
     shares.stop(c.p.id);
     sessions.delete(c.session);
+    if (arena.isPlayer(c.p.id)) arena.leave(c.p.id); // the connection is already gone, so no one is teleported
     links.remove(c.p.id);
     for (const key of [...rings.keys(), ...lastWave.keys()]) {
       if (key.startsWith(`${c.p.id}>`) || key.endsWith(`>${c.p.id}`)) {
@@ -782,6 +879,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       links.stop();
       clearInterval(pinger);
       clearInterval(pruner);
+      clearInterval(arenaTimer);
       reject(err); // e.g. the port is already in use
     });
     server.listen(opts.port, () => {
@@ -795,6 +893,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
             store?.flush();
             clearInterval(pinger);
             clearInterval(pruner);
+            clearInterval(arenaTimer);
             for (const ws of wss.clients) ws.terminate();
             wss.close(() => server.close(() => done()));
           }),

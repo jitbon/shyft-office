@@ -52,6 +52,8 @@ export interface OfficeInput {
   cubiclePods?: ReadonlySet<string>;
   /** Display name for a desk's conversation, by desk id. */
   deskLabels?: ReadonlyMap<string, string>;
+  /** Ids of the players in an Office Arena match. They are never linked with anyone outside it, and the other way round. */
+  match?: ReadonlySet<string>;
 }
 
 export interface LinkOptions {
@@ -144,22 +146,26 @@ export function computeLinks(
   const conversations: ConversationGroup[] = [];
   const overflow = new Set<string>();
 
+  const inMatch = (id: string) => office.match?.has(id) ?? false;
   const open: LinkPlayer[] = [];
-  const byArea = new Map<LinkContext, { label: string; members: LinkPlayer[] }>();
+  // Keyed by context, and by side of a match, so players and non-players never share a group.
+  const byArea = new Map<string, { context: LinkContext; label: string; members: LinkPlayer[] }>();
   for (const p of players) {
     const c = contextOf(p, office);
     if (!c) continue;
     if (c.context === 'open') {
       open.push(p);
     } else {
-      const g = byArea.get(c.context) ?? { label: c.label, members: [] };
+      const key = `${c.context}${inMatch(p.id) ? '|match' : ''}`;
+      const g = byArea.get(key) ?? { context: c.context, label: c.label, members: [] };
       g.members.push(p);
-      byArea.set(c.context, g);
+      byArea.set(key, g);
     }
   }
 
   // Private areas and private desks: everyone inside is in one conversation, however far apart.
-  for (const [context, g] of byArea) {
+  for (const g of byArea.values()) {
+    const { context } = g;
     if (g.members.length < 2) continue;
     conversations.push({ id: g.members[0].id, context, label: g.label, members: g.members.map((m) => m.id) });
     for (let i = 0; i < g.members.length; i++) {
@@ -176,6 +182,7 @@ export function computeLinks(
   for (let i = 0; i < open.length; i++) {
     for (let j = i + 1; j < open.length; j++) {
       const a = open[i], b = open[j];
+      if (inMatch(a.id) !== inMatch(b.id)) continue;
       // Neighbours seated in the same ambient pod only overhear each other; walking up opens a conversation.
       const pod = seatedPod(a, office);
       if (pod && pod === seatedPod(b, office)) continue;
@@ -215,7 +222,7 @@ export function computeLinks(
   for (let x = 0; x < seated.length; x++) {
     for (let y = x + 1; y < seated.length; y++) {
       const a = seated[x], b = seated[y];
-      if (a.pod !== b.pod || find(a.i) === find(b.i)) continue;
+      if (a.pod !== b.pod || find(a.i) === find(b.i) || inMatch(open[a.i].id) !== inMatch(open[b.i].id)) continue;
       links.push({ a: open[a.i].id, b: open[b.i].id, kind: 'ambient', context: `pod:${a.pod}` });
     }
   }

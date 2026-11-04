@@ -1,6 +1,7 @@
 import './style.css';
 import { MAP_H, MAP_W, SPAWN, moveWithCollision, areaAt, deskAt, getWorld, onWorldChange } from '../shared/map';
 import { gainFor } from '../shared/proximity';
+import { RUN_MULT, WALK_SPEED } from '../shared/movement';
 import type {
   AvatarChoice, ChatScope, ClientMsg, ConversationInfo, ItemInfo, Link, PlayerState, PlayerStatus, ServerMsg, ViewMode,
 } from '../shared/protocol';
@@ -19,8 +20,8 @@ import {
 } from './office-ui';
 import { Net } from './net';
 import { session } from './session';
-import { Renderer2D, drawBubble, drawNameTag } from './render2d';
-import { Raycaster } from './render3d';
+import { Renderer2D, drawBubble, drawNameTag, type Arena2D } from './render2d';
+import { Raycaster, type Fx3D } from './render3d';
 import { defaultZoom, rescale, stepZoom } from './scale';
 import { handleSocialNotify, initStatus, refreshStatusUi } from './status';
 import { statusColor, type Player } from './types';
@@ -34,11 +35,16 @@ import { Studio } from './studio/studio';
 import { onHelperStatus, setHelperStatus } from './studio/helper-ui';
 import { loadLayout, recompile } from './world-client';
 import { mouseLook, readInvert, writeInvert } from './look';
+import { ArenaClient, TEAM_COLOR } from './arena/client';
+import { ArenaHud } from './arena/hud';
+import { ArenaBoard } from './arena/board';
+import { ArenaShop } from './arena/shop';
+import { ArenaPanel } from './arena/panel';
+import { playArenaSound } from './arena/sound';
 
 // Art checks in tools/e2e read the avatar painter from the page.
 if (location.search.includes('arthash')) (window as unknown as { __shyftArt: unknown }).__shyftArt = { makeAvatar, CATALOG };
 
-const WALK_SPEED = 3.6; // tiles per second
 const TURN_SPEED = 2.6; // radians per second
 const MOUSE_SENS = 0.0028;
 let pitch = 0; // how far the view is tilted up (+) or down (-); only ever in this browser, level whenever first person opens
@@ -82,6 +88,61 @@ const camBtn = $<HTMLButtonElement>('camBtn');
 const chatScopeBtn = $<HTMLButtonElement>('chatScope');
 
 let me: Player;
+
+// Office Arena: the client keeps what the server tells us, and the HUD, board, shop and panel draw it.
+const nameOfPlayer = (id: string) => (id === me?.id ? 'You' : others.get(id)?.name ?? 'Someone');
+const arena = new ArenaClient({
+  send: (m) => net.send(m),
+  myId: () => me?.id ?? '',
+  posOf: (id) => (id === me?.id ? me : others.get(id)),
+  onChange: () => refreshArenaLocks(),
+  onSound: (kind) => {
+    if (arena.inMatch()) playArenaSound(kind);
+  },
+});
+const arenaHud = new ArenaHud($('arenaHud'), arena, nameOfPlayer);
+const arenaBoard = new ArenaBoard($('arenaBoard'), arena, nameOfPlayer);
+const arenaShop = new ArenaShop($('arenaShop'), arena, (m) => net.send(m));
+const arenaPanel = new ArenaPanel($('arenaPanel'), $('arenaBanner'), arena, {
+  send: (m) => {
+    // Remember how we were standing, so leaving puts us back the same way.
+    if (m.t === 'arena' && (m.op === 'start' || m.op === 'join')) {
+      arena.returnPose = { a: me.a, mode };
+      if (mode !== '3d') setMode('3d'); // a match is played in first person
+    }
+    net.send(m);
+  },
+  nameOf: nameOfPlayer,
+  beforeJoin: () => {
+    if (shareStatus === 'sharing') {
+      endShare();
+      notice('Screen sharing stopped: you cannot share during a match.', { key: 'arena-share', ttlMs: 4000 });
+    }
+  },
+  confirm: (text) => window.confirm(text),
+});
+/** What a match closes while you are in it: building, the studio, the character and sharing your screen. */
+function refreshArenaLocks() {
+  const locked = arena.inMatch();
+  const why = locked ? 'Not during a match' : '';
+  buildBtn.disabled = locked;
+  buildBtn.title = why || 'Rearrange the office (B)';
+  const characterBtn = $<HTMLButtonElement>('characterBtn');
+  characterBtn.disabled = locked;
+  characterBtn.title = why || 'Change your character';
+  if (locked && builder.active) toggleBuild();
+  if (locked) document.exitPointerLock?.();
+  arenaPanel.update();
+  updateHints();
+  refreshShare();
+}
+/** What is drawn for a shot: its team's colour. */
+const tracerColor = (t: { team: 'blue' | 'orange' | null }) => (t.team ? TEAM_COLOR[t.team] : '#f5f5f7');
+/** Packs a #rrggbb colour as the 0xAABBGGRR pixel the first-person framebuffer uses. */
+const packColor = (hex: string) => {
+  const n = parseInt(hex.slice(1), 16);
+  return (0xff000000 | ((n & 0xff) << 16) | (n & 0xff00) | (n >> 16)) >>> 0;
+};
 /** What we send (and re-send on every reconnect) to enter the office. */
 let joinMsg: Extract<ClientMsg, { t: 'join' }>;
 const others = new Map<string, Player>();
@@ -149,6 +210,22 @@ window.addEventListener('keydown', (e) => {
       return;
     }
   }
+  if (arena.inMatch()) {
+    // In a match, B is the shop (Build is closed) and K shows the scoreboard.
+    if (e.code === 'KeyB' && !e.repeat) {
+      e.preventDefault();
+      arenaShop.toggle();
+      return;
+    }
+    if (e.code === 'KeyK') {
+      arenaBoard.setHeld(true);
+      return;
+    }
+    if (e.key === 'Escape' && arenaShop.isOpen) {
+      arenaShop.close();
+      return;
+    }
+  }
   if (e.code === 'KeyB' && !e.repeat && session.canBuild) {
     e.preventDefault();
     toggleBuild();
@@ -206,6 +283,7 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => {
   keys.delete(e.code);
+  if (e.code === 'KeyK') arenaBoard.setHeld(false);
   // macOS sends no keyup for other keys released while ⌘ is down, so anything held then may never be let go of.
   if (e.key === 'Meta') keys.clear();
 });
@@ -227,6 +305,8 @@ canvas.addEventListener('click', (e) => {
   if (builder.active) return;
   if (mode === '3d') {
     if (document.pointerLockElement !== canvas) canvas.requestPointerLock();
+    else if (arena.spectating()) arena.nextSpectate();
+    else arena.fire(me.a);
     return;
   }
   // Top-down: clicking a desk opens its card, clicking elsewhere closes it.
@@ -271,6 +351,10 @@ chatInput.addEventListener('keydown', (e) => {
 
 /** Opens or closes build mode. Build mode is a top-down view, so first person switches back first. */
 function toggleBuild() {
+  if (arena.inMatch()) {
+    notice('Not during a match', { key: 'arena-build', ttlMs: 2000 });
+    return;
+  }
   keys.clear();
   pitch = 0;
   if (!builder.active && mode === '3d') setMode('2d');
@@ -287,8 +371,15 @@ document.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) => {
   };
 });
 
+$<HTMLButtonElement>('arenaBtn').onclick = (e) => {
+  arenaPanel.toggle();
+  arenaPanel.update();
+  (e.currentTarget as HTMLElement).blur();
+};
+
 $<HTMLButtonElement>('characterBtn').onclick = async (e) => {
   (e.currentTarget as HTMLElement).blur();
+  if (arena.inMatch()) return;
   keys.clear();
   document.exitPointerLock();
   const next = await changeCharacter({ name: me.name, look: me.look, avatar: me.avatarChoice });
@@ -572,6 +663,7 @@ const SHARE_ENDED: Record<string, string> = {
   left: 'Screen sharing stopped because you left the conversation.',
   dnd: 'Screen sharing stopped: Do Not Disturb is on.',
   full: '3 people are already sharing here.',
+  arena: 'Screen sharing is closed during a match.',
 };
 
 /** The Share screen button, the banner and the viewers' stage, as of now. */
@@ -582,6 +674,7 @@ function refreshShare() {
     if (!window.isSecureContext) control = { unavailable: 'Screen sharing needs a secure (https) address' };
     else if (!navigator.mediaDevices?.getDisplayMedia) control = { unavailable: "Your browser can't share screens" };
     else if (shares.length >= 3) control = { unavailable: MAX_SHARES_NOTE };
+    if (arena.inMatch()) control = { unavailable: 'Not during a match' };
   }
   callPanel.setShareControl(control);
   const sharing = shareStatus === 'sharing' && shares.some((sh) => sh.sharer === me.id);
@@ -619,8 +712,9 @@ function setMode(next: ViewMode) {
 }
 
 function updateHints() {
-  $('help').innerHTML =
-    mode === '2d'
+  $('help').innerHTML = arena.inMatch()
+    ? '<b>WASD</b> move · <b>mouse</b> look · <b>click</b> fire · <b>B</b> shop (buy phase) · hold <b>K</b> scoreboard · <b>Tab</b> overview · <b>Enter</b> chat · Arena button to leave'
+    : mode === '2d'
       ? '<b>WASD</b>/arrows move · <b>Shift</b> run · <b>Space</b> jump · <b>Tab</b> first person · <b>Enter</b> chat · <b>+/-</b> zoom · <b>M</b> mic · <b>C</b> camera · <b>G</b> my desk · click a desk'
       : '<b>WASD</b> move · <b>mouse</b> look around · <b>←→</b> turn · <b>Shift</b> run · <b>Space</b> jump · <b>Tab</b> top-down · <b>Enter</b> chat · <b>M</b> mic · <b>C</b> camera · <b>G</b> my desk · <b>F</b> desk menu';
   updateLockHint();
@@ -756,7 +850,20 @@ function onMessage(msg: ServerMsg) {
       setOffice(msg);
       break;
     case 'adminState':
-      setAdminState(msg.areaAllowed, msg.buildingEnabled, msg.helperEnabled);
+      setAdminState(msg.areaAllowed, msg.buildingEnabled, msg.helperEnabled, msg.arenaEnabled);
+      break;
+    case 'arena':
+      arena.onArena(msg);
+      if (!arena.inMatch()) arenaShop.close();
+      break;
+    case 'arenaShot':
+      arena.onShot(msg);
+      break;
+    case 'arenaYou':
+      arena.onYou(msg);
+      break;
+    case 'arenaBoard':
+      arena.onBoard(msg);
       break;
     case 'objects':
       updateCustomObjects(msg.objects, () => builder.refreshPanel());
@@ -787,6 +894,22 @@ function onMessage(msg: ServerMsg) {
       // The server asked us to move (to our desk, or to an invitation); the move itself is ours to make.
       me.x = msg.x;
       me.y = msg.y;
+      if (msg.reason === 'arena') {
+        if (msg.back) {
+          // Back from a match: the way we stood before, in the view we were in.
+          const pose = arena.returnPose;
+          arena.returnPose = null;
+          me.a = pose?.a ?? msg.a ?? me.a;
+          pitch = 0;
+          setMode(pose?.mode ?? mode);
+        } else {
+          // A round starts: to the team's spot, in first person, facing the other team.
+          if (msg.a !== undefined) me.a = msg.a;
+          pitch = 0;
+          if (mode !== '3d') setMode('3d');
+          arenaShop.close();
+        }
+      }
       sendState(true);
       break;
     case 'sprites':
@@ -939,7 +1062,7 @@ function update(dt: number) {
     updateOthers(dt);
     return;
   }
-  const run = held('ShiftLeft', 'ShiftRight') ? 1.8 : 1;
+  const run = held('ShiftLeft', 'ShiftRight') ? RUN_MULT : 1;
   let vx = 0, vy = 0;
   if (mode === '2d') {
     vx = +held('KeyD', 'ArrowRight') - +held('KeyA', 'ArrowLeft');
@@ -954,8 +1077,10 @@ function update(dt: number) {
     vy = s * fwd + c * strafe;
   }
   const len = Math.hypot(vx, vy);
-  me.moving = len > 0;
-  if (len > 0) {
+  // A match holds you still in the buy phase, while tagged out, and in the top-down overview (the server holds you too).
+  const walking = len > 0 && !arena.frozen(mode);
+  me.moving = walking;
+  if (walking) {
     const step = (WALK_SPEED * run * dt) / len;
     const next = moveWithCollision(me.x, me.y, vx * step, vy * step);
     // Do not walk into a room we expect to be turned away from; the server still decides.
@@ -1021,9 +1146,36 @@ function drawMinimap(w: number) {
   ctx.fillRect(cx - 2, cy - 2, 4, 4);
 }
 
+/** What Office Arena draws this frame: team rings, tracers and puffs, for the top-down view. */
+function arenaFx2d(): Arena2D | null {
+  if (!arena.match) return null;
+  const t = performance.now();
+  return {
+    ring: (id) => {
+      const team = arena.teamOf(id);
+      return team && (arena.isAlive(id) || arena.phase === 'lobby') ? TEAM_COLOR[team] : null;
+    },
+    tracers: arena.tracers.map((tr) => ({ x0: tr.x0, y0: tr.y0, x1: tr.x1, y1: tr.y1, color: tracerColor(tr), alpha: Math.max(0, (tr.until - t) / 150) })),
+    puffs: arena.puffs.map((p) => ({ x: p.x, y: p.y, t: 1 - Math.max(0, (p.until - t) / 600) })),
+  };
+}
+
+function arenaFx3d(): Fx3D | null {
+  if (!arena.match || (!arena.tracers.length && !arena.puffs.length)) return null;
+  const t = performance.now();
+  return {
+    tracers: arena.tracers.map((tr) => ({ x0: tr.x0, y0: tr.y0, x1: tr.x1, y1: tr.y1, color: packColor(tracerColor(tr)) })),
+    puffs: arena.puffs.map((p) => ({ x: p.x, y: p.y, t: 1 - Math.max(0, (p.until - t) / 600) })),
+  };
+}
+
 function render(now: number) {
   const w = canvas.width, h = canvas.height;
   const people = [me, ...others.values()];
+  arena.prune();
+  arenaHud.update(now);
+  arenaBoard.update(now);
+  arenaShop.update();
   // Which desk space you are in: a strong highlight top-down, and the "Your desk" cue in both views.
   const { highlight, view } = deskPresenceNow(me, now);
   showDeskCue(view ? null : deskCueText(highlight)); // once the desk view is open its heading says "Your desk"
@@ -1036,11 +1188,16 @@ function render(now: number) {
   if (mode === '2d') {
     renderer2d.deskPresence = highlight && { tiles: highlight.tiles, mine: highlight.mine };
     renderer2d.deskTags = deskTags(hoverDesk);
+    renderer2d.arena = arenaFx2d();
     renderer2d.render(ctx, w, h, zoom, dpr, me, people, now);
   } else {
     raycaster.resize(w, h);
     raycaster.markers = deskMarkers();
-    const labels = raycaster.render(me, [...others.values()], Date.now(), pitch);
+    raycaster.fx = arenaFx3d();
+    // Tagged out, you watch through a teammate's eyes: their place and facing, with you as one of the people in view.
+    const watched = arena.spectateTarget();
+    const eyes = (watched && others.get(watched)) || me;
+    const labels = raycaster.render(eyes, eyes === me ? [...others.values()] : [me, ...[...others.values()].filter((o) => o !== eyes)], Date.now(), eyes === me ? pitch : 0);
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(raycaster.canvas, 0, 0, w, h);
     // Labels and the minimap are laid out in CSS pixels.
@@ -1051,6 +1208,18 @@ function render(now: number) {
     for (const l of labels) {
       const top = drawNameTag(ctx, l.player.name, l.x * sx, l.y * sy - 4, 18, statusColor(l.player.status));
       if (l.player.bubble && l.player.bubble.until > now) drawBubble(ctx, l.player.bubble.text, l.x * sx, top);
+      // A small marker in the team's colour over the heads of match players.
+      const team = arena.teamOf(l.player.id);
+      if (team) {
+        const mx = l.x * sx, my = top - 12;
+        ctx.fillStyle = TEAM_COLOR[team];
+        ctx.beginPath();
+        ctx.moveTo(mx - 7, my - 8);
+        ctx.lineTo(mx + 7, my - 8);
+        ctx.lineTo(mx, my + 4);
+        ctx.closePath();
+        ctx.fill();
+      }
     }
     drawMinimap(w / dpr);
     ctx.restore();
@@ -1107,6 +1276,7 @@ async function start() {
     online = isOnline;
     if (!isOnline) {
       others.clear();
+      arena.onArena({ t: 'arena', match: null });
       links = [];
       conversation = null;
       convFull = false;
@@ -1168,6 +1338,7 @@ async function start() {
       hudTimer = 0;
       renderZone();
       renderPeople();
+      arenaPanel.update();
     }
     requestAnimationFrame(frame);
   };

@@ -24,6 +24,8 @@ export interface ApiCaller {
   name: string;
   isAdmin: boolean;
   guest: boolean;
+  /** In an Office Arena match, where the builder and studio are closed. */
+  inMatch?: boolean;
 }
 
 export interface ApiContext {
@@ -131,6 +133,7 @@ function reply(res: http.ServerResponse, status: number, body?: Json) {
 
 function requireBuilder(ctx: ApiContext, who: ApiCaller) {
   if (who.guest) throw new HttpError(403, { error: 'not-builder' });
+  if (who.inMatch) throw new HttpError(409, { error: 'in-match' });
   if (!who.isAdmin && !ctx.buildingEnabled()) throw new HttpError(403, { error: 'building-off' });
 }
 
