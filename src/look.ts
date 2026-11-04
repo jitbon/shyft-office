@@ -1,5 +1,6 @@
 // Looking up and down in first person: the tilt (pitch), how the mouse changes it, where it puts the horizon, and the
 // "invert" setting. Pure, so the arithmetic is tested without a browser; the tilt itself lives in main.ts and is never shared.
+import { deviceStorage } from './storage';
 
 /** The most the view tilts either way: 60 degrees. */
 export const PITCH_MAX = Math.PI / 3;
@@ -25,14 +26,7 @@ export function horizonRow(h: number, K: number, pitch: number): number {
 
 export const INVERT_KEY = 'shyft.invertLook';
 
-/** The device's storage, when the browser lets us have it (a private window or blocked site data may not). */
-const storage = (): Storage | undefined => {
-  try {
-    return typeof localStorage === 'undefined' ? undefined : localStorage;
-  } catch {
-    return undefined;
-  }
-};
+const storage = deviceStorage;
 
 /** Whether the device remembers "invert mouse up/down"; off unless it was ticked. */
 export function readInvert(store: Pick<Storage, 'getItem'> | undefined = storage()): boolean {

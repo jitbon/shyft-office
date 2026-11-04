@@ -15,7 +15,7 @@
 - **Responses:**
   - `200 { "avatar": AvatarChoice }`: the member's saved character, re-validated against the current catalog and sprite index;
   - `404`: nothing saved, or the header is missing or invalid (guests always get this);
-  - `429`: more than 10 requests per minute from one address.
+  - `429`: more than 10 requests per minute for one member id, or more than 300 per minute from one address. It is limited by member id because behind an HTTPS tunnel every member comes from the same address (changed in the 2026-11-02 code review).
 - **No session required:** the join screen runs before the WebSocket session (research R6).
 - **What it reveals:** only the character saved for that id. The response is the same look others see in the office.
 

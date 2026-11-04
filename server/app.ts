@@ -29,6 +29,7 @@ import { OfficeState } from './office';
 import { loadSprites, noSprites, validateAvatarChoice } from './sprites';
 import { StateStore, loadState } from './store';
 import { loadCharacter } from './characters';
+import { Cooldown, RateWindow, type Limit } from './rate';
 import { DEFAULT_LOOK, validateLook } from '../shared/wardrobe';
 
 export interface ServerOptions {
@@ -86,11 +87,17 @@ const MIME: Record<string, string> = {
  * With the socket's own 64 KB limit this bounds what one connection can make the server relay.
  */
 const MAX_RTC_BYTES = 48 * 1024;
-/** Call setup per connection in any one second: a full meeting sends a burst of offers and candidates, nothing like this much. */
-const MAX_RTC_PER_SECOND = 200;
-/** Character changes one connection may make in a second: each is a broadcast and a save. */
-const MAX_AVATARS_PER_SECOND = 4;
-const MAX_RTC_BYTES_PER_SECOND = 1024 * 1024;
+/** Per connection, per second. */
+const PER_SECOND = {
+  /** Call setup: a full meeting sends a burst of offers and candidates, nothing like this much. */
+  rtc: { count: 200, weight: 1024 * 1024 },
+  /** Character changes: each is a broadcast and a save. */
+  avatar: { count: 4 },
+  /** Starting, stopping or resizing a screen share. */
+  share: { count: 4 },
+  /** Pen ink (weight is points). */
+  ink: { count: INK_RATE_MSGS, weight: INK_RATE_POINTS },
+} satisfies Record<string, Limit>;
 
 const cleanLook = (l: unknown): Look => validateLook(l, DEFAULT_LOOK);
 const cleanName = (n: unknown) => String(n ?? '').trim().slice(0, 24) || 'Guest';
@@ -195,15 +202,13 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     const c = byId.get(id);
     if (c) send(c.ws, msg);
   };
-  /** When each player last jumped, to keep jumps to one at a time. */
-  const lastJump = new Map<string, number>();
-  /** When each connection last sent a `share` message, to keep it to four a second. */
-  const shareTimes = new Map<string, number[]>();
-  const avatarTimes = new Map<string, number[]>();
-  const rtcRecent = new Map<string, { at: number; bytes: number }[]>();
-  /** Ink sent in the last second, per connection, and when it was last told to slow down. */
-  const inkRecent = new Map<string, { at: number; pts: number }[]>();
-  const inkSlowAt = new Map<string, number>();
+  /** Per-connection limits, keyed `<what>:<player id>`; see PER_SECOND. */
+  const perSecond = new RateWindow(1000);
+  const within = (what: keyof typeof PER_SECOND, id: string, weight = 0) => perSecond.take(`${what}:${id}`, PER_SECOND[what], weight);
+  /** One jump at a time per person. */
+  const jumpCooldown = new Cooldown(JUMP_COOLDOWN_MS - 50);
+  /** "Slow down" goes to a drawer at most once a second. */
+  const inkSlowCooldown = new Cooldown(1000);
 
   function broadcast(msg: ServerMsg, except?: WebSocket) {
     const data = JSON.stringify(msg);
@@ -280,13 +285,10 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     draftCooldownMs: opts.draftCooldownMs ?? 500,
   };
   const shares = new ShareRegistry();
-  const links = new LinkEngine(
-    () => [...conns.values()].map((c) => c.p),
-    sendTo,
-    {},
-    () => office.linkInput(),
-    (members) => shares.sharesOf(members),
-  );
+  const links = new LinkEngine(() => [...conns.values()].map((c) => c.p), sendTo, {
+    office: () => office.linkInput(),
+    shares: (members) => shares.sharesOf(members),
+  });
   /** Where a player stands for the screen-share rules, or null once they are gone. */
   const placeOf = (id: string): SharePlace | null => {
     const p = byId.get(id)?.p;
@@ -472,9 +474,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       links.update();
     } else if (msg.t === 'jump') {
       // Only for show, but still limited: one jump at a time per person, told to everyone who is sent their moves.
-      const now = Date.now();
-      if (now - (lastJump.get(me.id) ?? 0) < JUMP_COOLDOWN_MS - 50) return;
-      lastJump.set(me.id, now);
+      if (!jumpCooldown.ready(me.id)) return;
       broadcast({ t: 'jump', id: me.id }, ws);
     } else if (msg.t === 'desk') {
       const fail = (error: string) => send(ws, { t: 'notify', kind: 'error', text: error });
@@ -666,20 +666,13 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       sendTo(target.p.id, { t: 'notify', kind: 'wave', from: me.id, text: me.name, reply: !!msg.reply });
     } else if (msg.t === 'avatar') {
       // Each change is a broadcast and a save: past a few a second the rest are dropped.
-      const now = Date.now();
-      const recent = (avatarTimes.get(me.id) ?? []).filter((t) => now - t < 1000);
-      if (recent.length >= MAX_AVATARS_PER_SECOND) return;
-      recent.push(now);
-      avatarTimes.set(me.id, recent);
+      if (!within('avatar', me.id)) return;
       me.avatar = validateAvatarChoice(msg.avatar, sprites.index, me.look);
       office.saveCharacter(me.memberId, me.avatar);
       broadcast({ t: 'presence', id: me.id, avatar: me.avatar }); // the sender too, in case we corrected it
     } else if (msg.t === 'share') {
+      if (!within('share', me.id)) return;
       const now = Date.now();
-      const recent = (shareTimes.get(me.id) ?? []).filter((t) => now - t < 1000);
-      if (recent.length >= 4) return;
-      recent.push(now);
-      shareTimes.set(me.id, recent);
       const share = validateShareMsg(msg);
       if (!share) return;
       if (!share.on) {
@@ -702,12 +695,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       handleInk(ws, me, msg);
     } else if (msg.t === 'rtc') {
       // Call setup only travels between people who are currently linked.
-      if (rawLength > MAX_RTC_BYTES) return;
-      const nowMs = Date.now();
-      const sent = (rtcRecent.get(me.id) ?? []).filter((r) => nowMs - r.at < 1000);
-      if (sent.length >= MAX_RTC_PER_SECOND || sent.reduce((n, r) => n + r.bytes, rawLength) > MAX_RTC_BYTES_PER_SECOND) return;
-      sent.push({ at: nowMs, bytes: rawLength });
-      rtcRecent.set(me.id, sent);
+      if (rawLength > MAX_RTC_BYTES || !within('rtc', me.id, rawLength)) return;
       if (typeof msg.to !== 'string' || !links.hasLink(me.id, msg.to)) return;
       sendTo(msg.to, { t: 'rtc', from: me.id, data: msg.data });
     }
@@ -718,18 +706,11 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
    * sharer's conversation at once (not on the link tick).
    */
   function handleInk(ws: WebSocket, me: PlayerState, msg: Extract<ClientMsg, { t: 'ink' | 'inkClear' | 'inkAllow' }>) {
-    const now = Date.now();
-    const recent = (inkRecent.get(me.id) ?? []).filter((r) => now - r.at < 1000);
     const points = msg.t === 'ink' && Array.isArray(msg.pts) ? msg.pts.length / 2 : 0;
-    if (recent.length >= INK_RATE_MSGS || recent.reduce((n, r) => n + r.pts, points) > INK_RATE_POINTS) {
-      if (now - (inkSlowAt.get(me.id) ?? 0) >= 1000) {
-        inkSlowAt.set(me.id, now);
-        send(ws, { t: 'inkSlow' });
-      }
+    if (!within('ink', me.id, points)) {
+      if (inkSlowCooldown.ready(me.id)) send(ws, { t: 'inkSlow' });
       return;
     }
-    recent.push({ at: now, pts: points });
-    inkRecent.set(me.id, recent);
 
     const parsed = msg.t === 'ink' ? validateInk(msg) : msg.t === 'inkClear' ? validateInkClear(msg) : validateInkAllow(msg);
     if (!parsed) return;
@@ -761,12 +742,9 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (!c) return;
     conns.delete(ws);
     byId.delete(c.p.id);
-    lastJump.delete(c.p.id);
-    shareTimes.delete(c.p.id);
-    avatarTimes.delete(c.p.id);
-    rtcRecent.delete(c.p.id);
-    inkRecent.delete(c.p.id);
-    inkSlowAt.delete(c.p.id);
+    for (const what of Object.keys(PER_SECOND)) perSecond.forget(`${what}:${c.p.id}`);
+    jumpCooldown.forget(c.p.id);
+    inkSlowCooldown.forget(c.p.id);
     shares.stop(c.p.id);
     sessions.delete(c.session);
     links.remove(c.p.id);

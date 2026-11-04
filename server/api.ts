@@ -17,6 +17,7 @@ import type { LayoutStore, Publisher, Revision } from './layout-store';
 import type { Helper } from './helper';
 import { MAX_DRAFT_BYTES, MAX_DRAFT_PARTS, type ItemsStore } from './items';
 import type { ObjectsStore } from './objects';
+import { RateWindow } from './rate';
 
 export interface ApiCaller {
   memberId: string;
@@ -78,18 +79,14 @@ function ratePasses(kind: 'publish' | 'draft' | 'studio', ctx: ApiContext, membe
   return true;
 }
 
-const perMinuteLog = new WeakMap<ApiContext, Map<string, number[]>>();
+/** One window per running server (its context), so two servers in one process (tests) don't share limits. */
+const perMinuteLog = new WeakMap<ApiContext, RateWindow>();
 
 /** True when `memberId` may do `what` now, given `limit` a minute; records the attempt. */
 function perMinute(what: 'upload' | 'item' | 'helper' | 'character', ctx: ApiContext, memberId: string, limit: number): boolean {
-  let m = perMinuteLog.get(ctx);
-  if (!m) perMinuteLog.set(ctx, (m = new Map()));
-  const now = Date.now();
-  const key = `${what}:${memberId}`;
-  const recent = (m.get(key) ?? []).filter((t) => now - t < 60_000);
-  if (recent.length >= limit) return false;
-  m.set(key, [...recent, now]);
-  return true;
+  let w = perMinuteLog.get(ctx);
+  if (!w) perMinuteLog.set(ctx, (w = new RateWindow(60_000)));
+  return w.take(`${what}:${memberId}`, { count: limit });
 }
 
 const uploadPasses = (ctx: ApiContext, memberId: string) => perMinute('upload', ctx, memberId, ctx.uploadsPerMinute);
@@ -149,9 +146,13 @@ export async function handleApi(req: http.IncomingMessage, res: http.ServerRespo
     // The join screen asks before there is a session, so this is the one route that needs none (research R6): it
     // returns only the look saved for the id asked about, which is what others see in the office anyway.
     if (req.method === 'GET' && url.pathname === '/api/character') {
-      if (!perMinute('character', ctx, req.socket.remoteAddress ?? '', 10)) throw new HttpError(429, { error: 'slow-down' });
       const id = req.headers['x-shyft-member'];
       const memberId = typeof id === 'string' ? id.toLowerCase() : '';
+      // Limited per member id, not per address: behind an HTTPS tunnel every member arrives from the same address. A looser
+      // per-address limit still bounds someone cycling through made-up ids.
+      if (!perMinute('character', ctx, `id:${memberId}`, 10) || !perMinute('character', ctx, `ip:${req.socket.remoteAddress ?? ''}`, 300)) {
+        throw new HttpError(429, { error: 'slow-down' });
+      }
       const avatar = isUuid(memberId) ? ctx.character(memberId) : undefined;
       if (!avatar) throw new HttpError(404, { error: 'no-character' });
       return reply(res, 200, { avatar });

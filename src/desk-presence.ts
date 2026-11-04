@@ -3,17 +3,11 @@
 import { DeskDwell, presenceOf, readDeskViewSetting, writeDeskViewSetting, type DeskPresence } from '../shared/desk-presence';
 import { areaAt, getWorld } from '../shared/map';
 import { deskOwners } from './office-ui';
+import { deviceStorage } from './storage';
 
 const dwell = new DeskDwell();
 
-/** The device's storage, when the browser lets us have it (a private window or blocked site data may not). */
-const storage = (): Storage | undefined => {
-  try {
-    return typeof localStorage === 'undefined' ? undefined : localStorage;
-  } catch {
-    return undefined;
-  }
-};
+const storage = deviceStorage;
 
 /** Whether the desk view opens by itself. Read once; changing it takes effect at once and is remembered on this device. */
 let viewOn = readDeskViewSetting(storage());

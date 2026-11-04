@@ -16,9 +16,7 @@ function setup(players: PlayerState[], shares: ShareInfo[]) {
   const engine = new LinkEngine(
     () => players,
     (id, msg) => msg.t === 'links' && sent.push({ id, msg }),
-    {},
-    () => ({}),
-    (members) => shares.filter((s) => members.includes(s.sharer)),
+    { shares: (members) => shares.filter((s) => members.includes(s.sharer)) },
   );
   return { engine, sent };
 }

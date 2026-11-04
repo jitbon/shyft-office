@@ -1,6 +1,7 @@
 // The studio's side of the item helper: what the server said about it, the request, and the plain messages when it
 // does not work out. The service is the server's business; the browser only ever calls this server.
 import { session } from '../session';
+import { readLocal, writeLocal } from '../storage';
 import type { Design } from './model';
 
 export type HelperStatus = 'off' | 'unavailable' | 'on';
@@ -27,20 +28,9 @@ export const MAX_IMAGE = 2 * 1024 * 1024;
 const NOTE_KEY = 'shyft.helperNote';
 
 /** Whether this member has read the note about where their words go. Kept in this browser only. */
-export function noteRead(): boolean {
-  try {
-    return localStorage.getItem(NOTE_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-export function markNoteRead() {
-  try {
-    localStorage.setItem(NOTE_KEY, '1');
-  } catch {
-    /* private window: the note shows again next time */
-  }
-}
+export const noteRead = (): boolean => readLocal(NOTE_KEY) === '1';
+/** In a private window the note shows again next time. */
+export const markNoteRead = () => writeLocal(NOTE_KEY, '1');
 
 export type DraftOutcome = { design: Design } | { message: string; cancelled?: boolean };
 

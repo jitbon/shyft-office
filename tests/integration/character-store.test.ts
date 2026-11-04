@@ -40,11 +40,19 @@ describe('GET /api/character', () => {
     expect(await (await get(server.port, id)).json()).toEqual({ avatar: { kind: 'built-in', look } });
   });
 
-  it('refuses more than 10 requests a minute from one address', async () => {
+  it('refuses more than 10 requests a minute for one member id', async () => {
     server = await startTestServer();
+    const id = crypto.randomUUID();
     const statuses: number[] = [];
-    for (let i = 0; i < 12; i++) statuses.push((await get(server.port, crypto.randomUUID())).status);
+    for (let i = 0; i < 12; i++) statuses.push((await get(server.port, id)).status);
     expect(statuses.slice(0, 10).every((s) => s === 404)).toBe(true);
     expect(statuses.slice(10)).toEqual([429, 429]);
+  });
+
+  it('does not let many members behind one address (a tunnel) use up each other\'s limit', async () => {
+    server = await startTestServer();
+    const statuses: number[] = [];
+    for (let i = 0; i < 30; i++) statuses.push((await get(server.port, crypto.randomUUID())).status);
+    expect(statuses.every((s) => s === 404)).toBe(true);
   });
 });

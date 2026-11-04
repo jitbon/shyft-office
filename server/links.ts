@@ -52,16 +52,26 @@ export class LinkEngine {
   private timer: NodeJS.Timeout | undefined;
   private logTimer: NodeJS.Timeout | undefined;
 
+  private opts: { maxOpen?: number };
+  private office: () => OfficeInput;
+  private shares: (members: string[]) => ShareInfo[];
+
   constructor(
     /** Players in join order. */
     private players: () => PlayerState[],
     private send: (id: string, msg: ServerMsg) => void,
-    private opts: { maxOpen?: number } = {},
-    /** Desk locks and pod modes, as of now. */
-    private office: () => OfficeInput = () => ({}),
-    /** The running screen shares of these players, oldest first. */
-    private shares: (members: string[]) => ShareInfo[] = () => [],
-  ) {}
+    inputs: {
+      maxOpen?: number;
+      /** Desk locks and pod modes, as of now. */
+      office?: () => OfficeInput;
+      /** The running screen shares of these players, oldest first. */
+      shares?: (members: string[]) => ShareInfo[];
+    } = {},
+  ) {
+    this.opts = { maxOpen: inputs.maxOpen };
+    this.office = inputs.office ?? (() => ({}));
+    this.shares = inputs.shares ?? (() => []);
+  }
 
   start(tickMs: number) {
     this.timer = setInterval(() => this.update(), tickMs);

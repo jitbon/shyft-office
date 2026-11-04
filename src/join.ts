@@ -5,6 +5,7 @@ import {
 } from '../shared/wardrobe';
 import { drawCharacter, loadAvatar, makeAvatar, type Avatar, type Dir } from './art';
 import { session } from './session';
+import { readLocal, writeLocal } from './storage';
 
 const STORAGE_KEY = 'shyft-office:profile';
 const MEMBER_KEY = 'shyft-office:member';
@@ -15,35 +16,29 @@ export interface Profile {
   avatar: AvatarChoice;
 }
 
-/** A random id that stays the same in this browser, so desk claims survive reloads. */
+let memberId: string | undefined;
+
+/**
+ * A random id that stays the same in this browser, so desk claims and the saved character survive reloads. Where storage is
+ * blocked it still stays the same for this page, so the player and the join message agree on who you are.
+ */
 export function getMemberId(): string {
-  try {
-    const saved = localStorage.getItem(MEMBER_KEY);
-    if (saved) return saved;
-    const id = crypto.randomUUID();
-    localStorage.setItem(MEMBER_KEY, id);
-    return id;
-  } catch {
-    // storage unavailable: this session just gets a fresh id
-    return crypto.randomUUID();
-  }
+  if (memberId) return memberId;
+  memberId = readLocal(MEMBER_KEY) || crypto.randomUUID();
+  writeLocal(MEMBER_KEY, memberId);
+  return memberId;
 }
 
 function loadProfile(): Partial<Profile> | null {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null');
+    return JSON.parse(readLocal(STORAGE_KEY) ?? 'null');
   } catch {
-    return null;
+    return null; // a damaged entry: start fresh
   }
 }
 
-function saveProfile(p: Profile) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
-  } catch {
-    // private mode etc.; the profile just won't be remembered
-  }
-}
+/** In a private window the profile just isn't remembered. */
+const saveProfile = (p: Profile) => writeLocal(STORAGE_KEY, JSON.stringify(p));
 
 async function fetchSprites(): Promise<SpriteIndex> {
   try {

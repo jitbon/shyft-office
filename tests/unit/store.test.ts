@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DESKS, DESK_PODS } from '../../shared/map';
-import { StateStore, emptyState, loadState, parseState, type StoredState } from '../../server/store';
+import { STATE_VERSION, StateStore, emptyState, loadState, parseState, type StoredState } from '../../server/store';
 
 let dir: string;
 beforeEach(() => {
@@ -39,11 +39,28 @@ describe('state store', () => {
     expect(loadState(dir)).toEqual(sample());
   });
 
-  it('starts empty when there is no file or it is corrupt', () => {
+  it('starts empty when there is no file or it is corrupt, keeping a copy of the corrupt one', () => {
     expect(loadState(dir)).toEqual(emptyState());
     fs.writeFileSync(path.join(dir, 'office-state.json'), '{not json');
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(loadState(dir)).toEqual(emptyState());
+    const kept = fs.readdirSync(dir).filter((f) => f.startsWith('office-state.json.unreadable-'));
+    expect(kept).toHaveLength(1);
+    expect(fs.readFileSync(path.join(dir, kept[0]), 'utf8')).toBe('{not json');
+  });
+
+  it('keeps a copy of a state file from a newer version instead of losing it on the next save', () => {
+    const newer = { ...sample(), version: STATE_VERSION + 1, somethingNew: [1, 2, 3] };
+    fs.writeFileSync(path.join(dir, 'office-state.json'), JSON.stringify(newer));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(loadState(dir)).toEqual(emptyState());
+    const kept = fs.readdirSync(dir).filter((f) => f.startsWith(`office-state.json.v${STATE_VERSION + 1}-`));
+    expect(kept).toHaveLength(1);
+    expect(JSON.parse(fs.readFileSync(path.join(dir, kept[0]), 'utf8'))).toEqual(newer);
+  });
+
+  it('writes the version it says it writes', () => {
+    expect(emptyState().version).toBe(STATE_VERSION);
   });
 
   it('drops claims for desks that no longer exist, tells their holders, and drops unknown pods and areas', () => {

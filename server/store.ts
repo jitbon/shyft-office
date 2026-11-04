@@ -45,6 +45,8 @@ export interface StoredCharacter {
 export const MAX_CHARACTERS = 2000;
 
 const FILE = 'office-state.json';
+/** The state file version this server writes. A feature that changes the file's shape bumps it and teaches parseState the old one. */
+export const STATE_VERSION = 4;
 const MAX_ALLOWED = 200;
 const MAX_NOTICE = 500;
 
@@ -167,16 +169,37 @@ export function parseState(raw: unknown): StoredState {
   return out;
 }
 
+/**
+ * Copies a state file this server cannot use to `office-state.json.<why>-<time>` before the server starts fresh, because the
+ * next save would otherwise overwrite it: every desk claim, room list and saved character in it would be gone.
+ */
+function keepAside(dir: string, why: string): string | undefined {
+  const aside = path.join(dir, `${FILE}.${why}-${Date.now()}`);
+  try {
+    fs.copyFileSync(path.join(dir, FILE), aside);
+    return aside;
+  } catch {
+    return undefined;
+  }
+}
+
 export function loadState(dir: string): StoredState {
   let raw: unknown;
   try {
     raw = JSON.parse(fs.readFileSync(path.join(dir, FILE), 'utf8'));
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.warn(`Ignoring unreadable ${FILE}:`, (err as Error).message);
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.warn(`Ignoring unreadable ${FILE} (a copy is kept at ${keepAside(dir, 'unreadable')}):`, (err as Error).message);
+    }
+    return emptyState();
+  }
+  const version = (raw as { version?: unknown } | null)?.version;
+  // A newer build (another branch, or before a rollback) wrote this: starting from it as if empty would lose it on the next save.
+  if (typeof version === 'number' && version > STATE_VERSION) {
+    console.warn(`${FILE} is version ${version}, newer than this server's ${STATE_VERSION}; starting fresh, with a copy kept at ${keepAside(dir, `v${version}`)}`);
     return emptyState();
   }
   const state = parseState(raw);
-  const version = (raw as { version?: unknown } | null)?.version;
   if (version === 1 || version === 2) {
     // Save the upgraded file at once, so the upgrade happens exactly once.
     const store = new StateStore(dir);
