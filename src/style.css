@@ -439,12 +439,31 @@ button.off { color: var(--muted); text-decoration: line-through; }
   top: 72px;
   width: min(340px, calc(100vw - 32px));
   max-height: calc(100vh - 96px);
-  overflow: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 #builderPanel > * { flex: none; }
+/* The header and tabs stay at the top and the tools and Publish at the bottom; only the middle scrolls. */
+#builderPanel > .bbody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 -12px;
+  padding: 0 12px;
+}
+#builderPanel .bbody > * { flex: none; }
+#builderPanel > .bdock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
 body.building #statusPanel, body.building #adminPanel, body.building #help, body.building #deskCard, body.building #deskHint, body.building #deskCue { display: none; }
 #builderPanel .bhead { display: flex; align-items: center; gap: 6px; }
 #builderPanel .bhead b { flex: 1; font-weight: 800; }

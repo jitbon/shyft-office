@@ -333,7 +333,10 @@ export class BuilderPanel {
 
   render(s: PanelState) {
     const a = this.api;
+    // Three parts: the header and tabs stay at the top, the tools and Publish stay at the bottom, and only the middle scrolls.
     const sections: HTMLElement[] = [];
+    const body: HTMLElement[] = [];
+    const dock: HTMLElement[] = [];
 
     const head = document.createElement('div');
     head.className = 'bhead';
@@ -389,7 +392,7 @@ export class BuilderPanel {
         grid.append(row);
       }
     }
-    sections.push(grid);
+    body.push(grid);
 
     const tools = document.createElement('div');
     tools.className = 'tools';
@@ -400,8 +403,8 @@ export class BuilderPanel {
     ] as const) {
       tools.append(button(label, () => a.setTool(id), { className: s.tool === id ? 'on' : '', title: tip }));
     }
-    sections.push(tools);
 
+    if (s.message) dock.push(Object.assign(document.createElement('div'), { className: 'bwarn', textContent: s.message }));
     if (s.selected) {
       const sel = document.createElement('div');
       sel.className = 'selected';
@@ -411,16 +414,16 @@ export class BuilderPanel {
         button('Edit item', () => a.openStudio(s.selected!.kind), { title: 'Change this item, or make your own copy of it, in the studio' }),
         button('Delete', a.remove),
       );
-      sections.push(sel);
+      dock.push(sel);
     }
-    if (s.message) sections.push(Object.assign(document.createElement('div'), { className: 'bwarn', textContent: s.message }));
+    dock.push(tools);
 
     const size = document.createElement('div');
     size.className = 'size';
     const w = Object.assign(document.createElement('input'), { type: 'number', min: '10', max: '100', value: String(s.size.w), ariaLabel: 'Width in tiles' });
     const h = Object.assign(document.createElement('input'), { type: 'number', min: '10', max: '100', value: String(s.size.h), ariaLabel: 'Height in tiles' });
     size.append('Size ', w, ' × ', h, button('Apply', () => a.applySize(Number(w.value), Number(h.value))));
-    sections.push(size);
+    body.push(size);
 
     if (s.clashes.length) {
       const box = document.createElement('div');
@@ -437,7 +440,7 @@ export class BuilderPanel {
         );
         box.append(row);
       }
-      sections.push(box);
+      body.unshift(box); // what blocks publishing goes first in the middle, where it is seen without scrolling
     }
 
     if (s.problems.length) {
@@ -447,7 +450,7 @@ export class BuilderPanel {
       for (const p of s.problems.slice(0, 12)) {
         box.append(button(p.message, () => a.focus(p.tiles), { className: 'link', title: 'Show on the map' }));
       }
-      sections.push(box);
+      body.unshift(box);
     }
 
     const foot = document.createElement('div');
@@ -461,9 +464,18 @@ export class BuilderPanel {
         title: s.problems.length ? 'Fix the problems first' : needsPick ? 'Choose what to keep first' : 'Everyone sees your changes',
       }),
     );
-    sections.push(foot);
+    dock.push(foot);
 
-    this.root.replaceChildren(...sections);
+    // Keep the middle's scroll position when the panel is drawn again (it is redrawn on every change).
+    const old = this.root.querySelector<HTMLElement>('.bbody');
+    const keepScroll = old && old.dataset.tab === s.tab ? old.scrollTop : 0;
+    const middle = Object.assign(document.createElement('div'), { className: 'bbody' });
+    middle.dataset.tab = s.tab;
+    middle.append(...body);
+    const bottom = Object.assign(document.createElement('div'), { className: 'bdock' });
+    bottom.append(...dock);
+    this.root.replaceChildren(...sections, middle, bottom);
+    middle.scrollTop = keepScroll;
   }
 
   /** The Rooms tab: ready-made rooms, new rooms and pods, and the settings of the one picked. */

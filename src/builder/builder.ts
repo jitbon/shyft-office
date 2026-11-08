@@ -271,7 +271,7 @@ export class Builder {
 
   exit() {
     if (!this._active) return;
-    void this.flushSave();
+    if (this.saveTimer) void this.flushSave(); // only unsaved edits; after a publish or discard there is nothing to keep
     this._active = false;
     this.detach();
     document.body.classList.remove('building');
@@ -382,9 +382,10 @@ export class Builder {
   private async discard() {
     if (this.busy || !window.confirm('Throw away your draft and start again from the office as it is?')) return;
     clearTimeout(this.saveTimer);
+    this.saveTimer = 0;
     await api('/api/draft', 'DELETE');
     const p = published;
-    if (!p) return;
+    if (!p) return this.exit();
     this.baseRev = p.rev;
     this.history.clear();
     this.clashes = [];
@@ -394,6 +395,7 @@ export class Builder {
     this.setLayout(cloneLayout(p.layout), false);
     this.saveText = 'Draft';
     this.checkBehind();
+    this.exit(); // a fresh start from the office as it is: leave build mode
   }
 
   private async restore(rev: number) {
@@ -433,6 +435,7 @@ export class Builder {
     this.busy = true;
     this.emit();
     clearTimeout(this.saveTimer);
+    this.saveTimer = 0;
     const r = await api('/api/publish', 'POST', { baseRev: this.baseRev, layout: this.layout });
     this.busy = false;
     if (r.status === 200) {
@@ -442,6 +445,7 @@ export class Builder {
       this.saveText = 'Published';
       this.host.notice('Published. Everyone can see your changes.', 4000);
       this.checkBehind();
+      this.exit(); // done building: back to the office
     } else if (r.status === 409) {
       await this.beginMerge(r.body.currentRev);
     } else if (r.status === 422) {
