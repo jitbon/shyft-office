@@ -72,7 +72,7 @@ other than localhost the browser will not allow the camera, though chat and walk
   remove your own, anyone inside can **Skip**, and the station takes over when the queue is empty. Volume and mute are
   yours alone (remembered in your browser), and the music dips under voices and shared-screen sound. A song that can't be
   embedded or played is skipped with a note. Only people inside the room receive anything from it. Anyone who can build marks
-  a room as a Jam Room with the **Jam Room** checkbox in the Rooms tab, and unmarking it stops the music for those inside.
+  a room as a Jam Room with the **Jam Room** checkbox in the Rooms tab (only a new office starts with the Kitchen marked; an office with a saved layout in `data/layout.json` needs a builder to tick it and publish), and unmarking it stops the music for those inside.
   Marked rooms show a tint and a note mark in both views.
 - **Your character.** On the join screen choose *Built-in* or *Custom* (a character, or parts, from the sheets in
   `sprites/`). Built-in has hairstyles, faces, skin tones, tops, bottoms, shoes and accessories, each with colours

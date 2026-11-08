@@ -136,10 +136,11 @@ export class JamCard {
       : listenerLine(s.listeners, cur?.byName);
     // Folding keeps the player: the provider requires it to stay visible while a song plays, so only the rest folds away.
     this.playerHost.classList.toggle('active', !!cur);
+    // The prompt stays on a folded card too, so sound is never silently waiting on a click nobody can see.
+    this.click.hidden = !this.client.needsClick;
     if (this.folded) return;
 
     this.station.hidden = !!cur || s.mode === 'track';
-    this.click.hidden = !this.client.needsClick;
     this.failed.hidden = !this.client.songsFailed;
     this.trackLine.textContent = cur
       ? `${cur.title} · added by ${cur.byName}${cur.len ? ` · ${Math.floor(cur.len / 60)}:${String(cur.len % 60).padStart(2, '0')}` : ''}`

@@ -30,6 +30,17 @@ const publish = async (by: TestClient, edit: (l: Layout) => void) => {
 };
 const room = (l: Layout, id: string) => l.rooms.find((r) => r.id === id)!;
 
+describe('spawning in a Jam Room', () => {
+  it('makes someone who joins at a spawn inside the room a listener straight away', async () => {
+    await boot();
+    const B = await connect('Ben');
+    expect((await publish(B, (l) => (l.spawn = { x: 6, y: 21 }))).status).toBe(200);
+    const A = await connect('Ana');
+    await until(() => live(A)?.room === 'kitchen', 'Ana to be told');
+    expect(live(A)).toMatchObject({ name: 'Kitchen', mode: 'station' });
+  });
+});
+
 describe('publishing Jam Rooms', () => {
   it('makes a newly marked room a Jam Room at once, for people already standing in it', async () => {
     await boot();

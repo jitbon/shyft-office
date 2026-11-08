@@ -64,21 +64,21 @@ export class JamPlayer {
   /** The browser would not start playback without a click. */
   onBlocked: () => void = () => {};
 
+  /** Set only once the provider says the player is ready; every call before that is safe and does nothing. */
   private yt: YTPlayer | null = null;
   private starting: Promise<void> | null = null;
-  private want: { ref: string; startMs: number } | null = null;
+  private want: { ref: string; startMs: number; at: number } | null = null;
   private lengthSent = false;
+  private lengthTimer = 0;
   private volume = 70;
 
   constructor(private host: HTMLElement) {}
 
-  /** Loads and plays `ref` from `positionMs`. */
+  /** Loads and plays `ref` from `positionMs`. If the player is still starting, the latest wanted track loads once it is ready. */
   load(ref: string, positionMs: number) {
-    this.want = { ref, startMs: positionMs };
+    this.want = { ref, startMs: positionMs, at: performance.now() };
     this.lengthSent = false;
-    void this.ensure().then(() => {
-      if (this.yt && this.want?.ref === ref) this.yt.loadVideoById({ videoId: ref, startSeconds: Math.max(0, positionMs / 1000) });
-    });
+    void this.ensure().then(() => this.loadWanted());
   }
 
   seek(ms: number) {
@@ -91,6 +91,8 @@ export class JamPlayer {
 
   stop() {
     this.want = null;
+    clearInterval(this.lengthTimer);
+    this.lengthTimer = 0;
     this.yt?.stopVideo();
   }
 
@@ -108,6 +110,16 @@ export class JamPlayer {
     return !!this.yt && this.yt.getPlayerState() === PLAYING;
   }
 
+  private loadWanted() {
+    const w = this.want;
+    if (!this.yt || !w) return;
+    // The song kept moving while the player started, so begin where it is now.
+    const startMs = w.startMs + (performance.now() - w.at);
+    this.yt.loadVideoById({ videoId: w.ref, startSeconds: Math.max(0, startMs / 1000) });
+    clearInterval(this.lengthTimer);
+    this.lengthTimer = window.setInterval(() => this.readLength(), 500);
+  }
+
   private ensure(): Promise<void> {
     if (this.yt) return Promise.resolve();
     this.starting ??= loadApi().then(
@@ -115,13 +127,14 @@ export class JamPlayer {
         new Promise<void>((resolve) => {
           const mount = document.createElement('div');
           this.host.replaceChildren(mount);
-          this.yt = new api.Player(mount, {
+          const created: YTPlayer = new api.Player(mount, {
             width: 200,
             height: 200,
             playerVars: { autoplay: 1, controls: 0, disablekb: 1, playsinline: 1, rel: 0, origin: location.origin },
             events: {
               onReady: () => {
-                this.yt?.setVolume(this.volume);
+                created.setVolume(this.volume);
+                this.yt = created;
                 resolve();
               },
               onStateChange: (e: { data: number }) => this.state(e.data),
@@ -138,15 +151,26 @@ export class JamPlayer {
     return this.starting;
   }
 
-  private state(s: number) {
-    if (s === PLAYING && !this.lengthSent && this.yt) {
-      const len = this.yt.getDuration();
-      if (len > 0) {
-        this.lengthSent = true;
-        this.onLength(Math.round(len));
+  /** The length is known as soon as the provider has it, in any state, so a blocked autoplay does not look like a track with no length. */
+  private readLength() {
+    if (this.lengthSent || !this.yt || !this.want) {
+      if (this.lengthSent) {
+        clearInterval(this.lengthTimer);
+        this.lengthTimer = 0;
       }
-    } else if (s === ENDED) {
-      this.onEnded();
+      return;
     }
+    const len = this.yt.getDuration();
+    if (len > 0) {
+      this.lengthSent = true;
+      clearInterval(this.lengthTimer);
+      this.lengthTimer = 0;
+      this.onLength(Math.round(len));
+    }
+  }
+
+  private state(s: number) {
+    this.readLength();
+    if (s === ENDED) this.onEnded();
   }
 }

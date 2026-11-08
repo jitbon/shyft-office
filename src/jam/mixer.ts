@@ -36,6 +36,8 @@ export class Mixer {
   private duck = 1;
   /** Called whenever the level changes, so the embedded player can follow (0–100). */
   onLevel: (percent: number) => void = () => {};
+  /** Called when the audio context starts or stops running (for instance after a click lets sound begin). */
+  onRunning: () => void = () => {};
 
   constructor() {
     try {
@@ -51,6 +53,7 @@ export class Mixer {
   audio(): AudioContext {
     if (!this.ctx) {
       this.ctx = new AudioContext();
+      this.ctx.addEventListener('statechange', () => this.onRunning());
       this.gain = this.ctx.createGain();
       this.gain.connect(this.ctx.destination);
       this.apply();

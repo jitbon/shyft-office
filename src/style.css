@@ -668,4 +668,4 @@ body:has(#viewToggle [data-mode='2d'].on) #arenaHud .ahTop { top: 70px; }
 #jamCard .jamInput { flex: 1; min-width: 0; }
 #jamCard .jamMessage { font-size: 12px; color: var(--accent); min-height: 0; }
 #jamCard.folded { gap: 2px; }
-#jamCard.folded .jamBody > :not(.jamPlayerHost) { display: none; }
+#jamCard.folded .jamBody > :not(.jamPlayerHost):not(.jamClick) { display: none; }

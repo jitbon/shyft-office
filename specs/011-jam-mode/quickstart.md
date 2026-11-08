@@ -10,7 +10,7 @@ npm run typecheck && npm test      # unit and integration tests, including ws-ja
 npm run dev                        # server on :3001 + Vite client
 ```
 
-Open 3 browser windows on the Vite URL (or use `npm run bots` for extra walkers) and join as Ana, Ben and Cy. The default Kitchen is the Jam Room. Songs need network access to the provider. Everything else works offline.
+Open 3 browser windows on the Vite URL (or use `npm run bots` for extra walkers) and join as Ana, Ben and Cy. A new office starts with the Kitchen as the Jam Room. An office with a saved layout (`data/layout.json`) does not: a builder ticks **Jam Room** on the Kitchen in the Rooms tab and publishes first. Songs need network access to the provider. Everything else works offline.
 
 ## Q0. The room is marked (Story 4)
 

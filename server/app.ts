@@ -527,6 +527,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       broadcast({ t: 'join', player: p }, ws);
       broadcastOffice();
       send(ws, arena.summary());
+      syncJam(c); // a spawn inside a Jam Room makes them a listener straight away
       console.log(`+ ${p.name} (${conns.size} online)`);
       return;
     }
@@ -833,7 +834,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (refused) send(ws, { t: 'notify', kind: 'error', text: refused });
     } else if (msg.t === 'jam' || msg.t === 'jamTrack' || msg.t === 'jamFail') {
       const adding = msg.t === 'jam' && msg.op === 'add';
-      if (!perMinute.take(`jam:${me.id}`, adding ? JAM_LIMITS.add : JAM_LIMITS.other)) {
+      if (!perMinute.take(adding ? `jam-add:${me.id}` : `jam:${me.id}`, adding ? JAM_LIMITS.add : JAM_LIMITS.other)) {
         if (adding) send(ws, { t: 'notify', kind: 'error', text: REFUSALS.rate });
         return;
       }
@@ -891,6 +892,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     conns.delete(ws);
     byId.delete(c.p.id);
     perMinute.forget(`jam:${c.p.id}`);
+    perMinute.forget(`jam-add:${c.p.id}`);
     for (const what of Object.keys(PER_SECOND)) perSecond.forget(`${what}:${c.p.id}`);
     jumpCooldown.forget(c.p.id);
     inkSlowCooldown.forget(c.p.id);

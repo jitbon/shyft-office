@@ -360,6 +360,18 @@ describe('songs that cannot be played', () => {
   });
 });
 
+describe('rate limits', () => {
+  it('does not let repeated skips use up the allowance for adding songs', async () => {
+    await boot();
+    const A = await connect('Ana');
+    await enter(A);
+    for (let i = 0; i < 25; i++) A.send({ t: 'jam', op: 'skip' }); // over the 20-per-minute limit for other actions
+    await sleep(60);
+    await add(A, 1); // still allowed: adds have their own count
+    expect(errors(A)).toEqual([]);
+  });
+});
+
 describe('hanging out', () => {
   it('leaves status and Do Not Disturb alone, and still delivers the jam during Do Not Disturb', async () => {
     await boot();

@@ -44,6 +44,11 @@ export class Station {
     this.schedule();
   }
 
+  /** Whether the shared audio clock is moving; while it is not, nothing is scheduled. */
+  private get running() {
+    return this.mixer.running;
+  }
+
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = 0;
@@ -61,6 +66,12 @@ export class Station {
   private schedule() {
     const ctx = this.mixer.audio();
     if (!this.out || !this.filter) return;
+    // While sound is blocked the audio clock stands still. Bars queued now would all play at once when it starts, so wait
+    // and pick up at whatever bar the shared clock has reached by then.
+    if (!this.running) {
+      this.scheduled.clear();
+      return;
+    }
     const { bar, offsetMs } = stationBar(this.epoch, this.serverNow());
     // Audio-clock time of the start of the current bar.
     const barStart = ctx.currentTime - offsetMs / 1000;

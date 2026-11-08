@@ -10,7 +10,7 @@ Shown (bottom-left, over both views) from the moment a `jam` state arrives until
 - **Controls:** Skip (hidden while the station plays), volume slider, mute.
 - **Queue:** the upcoming songs in order, each with its title and adder, and a remove (×) button on the viewer's own songs only. A counter shows "n / 20".
 - **Add:** a single text field, "Paste a link to a song", and an Add button. Enter also submits. Refusals appear under the field in plain words.
-- **Collapse:** the card can be folded to one line (the title and a mute button). Folding never pauses the music. While a linked song plays, the provider's player stays visible (research R3), so only the rest of the card folds away.
+- **Collapse:** while the station plays, the card folds to one line (the title and a mute button). Folding never pauses the music. While a linked song plays, the provider's player stays visible (research R3), so it folds to that line plus the player, not to one line. The "Click to start the music" button stays visible when folded.
 
 ## Sound start
 

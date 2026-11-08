@@ -99,9 +99,16 @@ export class Raycaster {
     this.ceilCells = [];
     const world = getWorld();
     this.meshes = worldMeshes(world);
+    // Jam Rooms get the same soft gold floor as in the top-down view.
+    const jamTiles = new Set<number>();
+    for (const a of world.areas) {
+      if (!a.jam) continue;
+      for (const [x0, y0, x1, y1] of a.rects) for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) jamTiles.add(y * MAP_W + x);
+    }
     for (let y = 0; y < MAP_H; y++) {
       for (let x = 0; x < MAP_W; x++) {
-        this.floorCells.push(bakedFloorCell(world, x, y, this.floors[baseFloor(x, y)]));
+        const cell = bakedFloorCell(world, x, y, this.floors[baseFloor(x, y)]);
+        this.floorCells.push(jamTiles.has(y * MAP_W + x) ? jamTint(cell) : cell);
         this.ceilCells.push(hash(x * 3, y * 5) < 0.18 ? this.ceil.light : this.ceil.plain);
       }
     }
@@ -319,4 +326,17 @@ export class Raycaster {
       }
     }
   }
+}
+
+/** The floor texture with the Jam Room tint (rgb 241,196,83 at 10%, as in render2d) mixed in. */
+function jamTint(tex: Texture): Texture {
+  const data = new Uint32Array(tex.data.length);
+  for (let i = 0; i < data.length; i++) {
+    const c = tex.data[i];
+    const r = (c & 255) + (241 - (c & 255)) * 0.1;
+    const g = ((c >>> 8) & 255) + (196 - ((c >>> 8) & 255)) * 0.1;
+    const b = ((c >>> 16) & 255) + (83 - ((c >>> 16) & 255)) * 0.1;
+    data[i] = ((c >>> 24) << 24 | Math.round(b) << 16 | Math.round(g) << 8 | Math.round(r)) >>> 0;
+  }
+  return { w: tex.w, h: tex.h, data };
 }
