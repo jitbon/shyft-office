@@ -769,7 +769,7 @@ export class Builder {
       tab: this.tab,
       tool: this.tool,
       brush: this.brush,
-      rooms: this.layout.rooms.map((r) => ({ id: r.id, name: r.name, private: r.private, restricted: r.restricted, ...(r.capacity === undefined ? {} : { capacity: r.capacity }) })),
+      rooms: this.layout.rooms.map((r) => ({ id: r.id, name: r.name, private: r.private, restricted: r.restricted, ...(r.jam ? { jam: true } : {}), ...(r.capacity === undefined ? {} : { capacity: r.capacity }) })),
       pods: this.layout.pods.map((p) => ({ id: p.id, name: p.name, mode: p.mode })),
       region: this.region,
       customs: [...customObjects()],

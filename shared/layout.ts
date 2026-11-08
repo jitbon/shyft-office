@@ -39,6 +39,8 @@ export interface Room {
   allowed: string[];
   /** Draw a lit border around the area for people inside it. */
   highlight: boolean;
+  /** A Jam Room plays shared music for everyone inside. Absent means an ordinary room. */
+  jam?: boolean;
 }
 
 export type PodMode = 'ambient' | 'cubicle';
@@ -216,6 +218,7 @@ export function parseLayout(
         restricted: o.restricted === true,
         allowed,
         highlight: typeof o.highlight === 'boolean' ? o.highlight : o.private === true,
+        ...(o.jam === true ? { jam: true } : {}),
       });
     }
   }

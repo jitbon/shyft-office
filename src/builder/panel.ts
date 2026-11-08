@@ -25,7 +25,7 @@ export interface PanelState {
   tab: Tab;
   tool: ToolId;
   brush: { floor: string; wall: string; kind: string; prefab: string };
-  rooms: { id: string; name: string; private: boolean; restricted: boolean; capacity?: number }[];
+  rooms: { id: string; name: string; private: boolean; restricted: boolean; jam?: boolean; capacity?: number }[];
   pods: { id: string; name: string; mode: 'ambient' | 'cubicle' }[];
   region: RegionRef | null;
   customs: CustomObject[];
@@ -57,7 +57,7 @@ export interface PanelApi {
   newRegion(kind: 'room' | 'pod', isPrivate?: boolean): void;
   selectRegion(ref: RegionRef | null): void;
   regionMode(mode: 'paint' | 'unpaint'): void;
-  patchRoom(patch: { name?: string; private?: boolean; capacity?: number | null; restricted?: boolean }): void;
+  patchRoom(patch: { name?: string; private?: boolean; capacity?: number | null; restricted?: boolean; jam?: boolean }): void;
   patchPod(patch: { name?: string; mode?: 'ambient' | 'cubicle' }): void;
   deleteRegion(): void;
   upload(file: File, meta: unknown): void;
@@ -392,11 +392,14 @@ export class BuilderPanel {
       priv.onchange = () => a.patchRoom({ private: priv.checked });
       const restricted = Object.assign(document.createElement('input'), { type: 'checkbox', checked: room.restricted });
       restricted.onchange = () => a.patchRoom({ restricted: restricted.checked });
+      const jam = Object.assign(document.createElement('input'), { type: 'checkbox', checked: !!room.jam });
+      jam.onchange = () => a.patchRoom({ jam: jam.checked });
       const cap = Object.assign(document.createElement('input'), { type: 'number', min: '1', max: '50', value: room.capacity === undefined ? '' : String(room.capacity), placeholder: 'any', ariaLabel: 'Most people' });
       cap.onchange = () => a.patchRoom({ capacity: cap.value === '' ? null : Number(cap.value) });
       box.append(
         row(document.createTextNode('Private (closed door)'), priv),
         row(document.createTextNode('Knock to enter'), restricted),
+        row(document.createTextNode('Jam Room (plays shared music for everyone inside)'), jam),
         row(document.createTextNode('Most people'), cap),
       );
     } else if (pod) {

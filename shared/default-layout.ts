@@ -53,7 +53,7 @@ const room = (r: Pick<Room, 'id' | 'name' | 'rects'> & Partial<Room>): Room => (
 const ROOMS: Room[] = [
   room({ id: 'meet-a', name: 'Meeting Room A', private: true, rects: [[1, 1, 12, 8]] }),
   room({ id: 'meet-b', name: 'Meeting Room B', private: true, rects: [[27, 1, 38, 8]] }),
-  room({ id: 'kitchen', name: 'Kitchen', rects: [[1, 19, 12, 26]] }),
+  room({ id: 'kitchen', name: 'Kitchen', rects: [[1, 19, 12, 26]], jam: true }),
   room({ id: 'library', name: 'Library', rects: [[27, 19, 38, 26]] }),
   room({ id: 'lobby', name: 'Lobby', rects: [[14, 18, 25, 26]] }),
   room({ id: 'open', name: 'Open Office', rects: [[14, 1, 25, 9], [1, 10, 38, 17]] }),

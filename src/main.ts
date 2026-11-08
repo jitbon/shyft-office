@@ -41,6 +41,11 @@ import { ArenaBoard } from './arena/board';
 import { ArenaShop } from './arena/shop';
 import { ArenaPanel } from './arena/panel';
 import { playArenaSound } from './arena/sound';
+import { JamCard } from './jam/card';
+import { JamClient } from './jam/client';
+import { Ducker, Mixer } from './jam/mixer';
+import { JamPlayer } from './jam/player';
+import { Station } from './jam/station';
 
 // Art checks in tools/e2e read the avatar painter from the page.
 if (location.search.includes('arthash')) (window as unknown as { __shyftArt: unknown }).__shyftArt = { makeAvatar, CATALOG };
@@ -83,6 +88,27 @@ const builder = new Builder({
 });
 onItemsChanged(() => builder.refreshPanel());
 onHelperStatus(() => studio.refresh());
+// Jam Rooms: the card, the music and the shared player. All of it stays idle until the server says we are inside one.
+const jamMixer = new Mixer();
+const jamCard = new JamCard($('jamCard'), jamMixer, (m) => net.send(m));
+const jamClient = new JamClient({ send: (m) => net.send(m), mixer: jamMixer, station: new Station(jamMixer), player: new JamPlayer(jamCard.playerHost) });
+jamCard.bind(jamClient);
+jamClient.onChange = () => jamCard.render();
+const jamDucker = new Ducker();
+// Browsers keep sound off until the person has interacted with the page: the first click or key press starts it.
+for (const ev of ['pointerdown', 'keydown'] as const) {
+  window.addEventListener(ev, () => {
+    if (jamClient.inRoom() && jamClient.needsClick) void jamClient.unlock();
+  }, true);
+}
+/** The music dips under voices (yours and everyone you can hear) and under a shared screen with sound. */
+window.setInterval(() => {
+  if (!jamClient.inRoom() || !me) return;
+  const screens = media.screens();
+  const shareSound = (conversation?.shares ?? []).some((sh) => sh.audio && sh.sharer !== me.id && screens.has(sh.sharer));
+  const speaking = media.selfTalking() || media.talking().size > 0 || shareSound;
+  jamMixer.setDuck(jamDucker.update(speaking, performance.now()));
+}, 50);
 const micBtn = $<HTMLButtonElement>('micBtn');
 const camBtn = $<HTMLButtonElement>('camBtn');
 const chatScopeBtn = $<HTMLButtonElement>('chatScope');
@@ -844,7 +870,14 @@ function onMessage(msg: ServerMsg) {
       }
       break;
     case 'notify':
+      if (msg.kind === 'error' && msg.text && jamCard.refusal(msg.text)) break; // a refused song shows under the add field
       if (!handleSocialNotify(msg)) onNotify(msg);
+      break;
+    case 'jam':
+      jamClient.onMessage(msg);
+      break;
+    case 'jamNote':
+      notice(msg.text.replace(/\*/g, '"'), { key: 'jam-note', ttlMs: 4000 });
       break;
     case 'office':
       setOffice(msg);
@@ -1192,7 +1225,14 @@ function render(now: number) {
     renderer2d.render(ctx, w, h, zoom, dpr, me, people, now);
   } else {
     raycaster.resize(w, h);
-    raycaster.markers = deskMarkers();
+    // Jam Rooms carry a note mark on their label, whether or not you are inside.
+    raycaster.markers = [
+      ...deskMarkers(),
+      ...getWorld().areas.filter((a) => a.jam).map((a) => {
+        const [x0, y0, x1, y1] = a.rects[0];
+        return { x: (x0 + x1 + 1) / 2, y: (y0 + y1 + 1) / 2, text: `\u266A ${a.name}` };
+      }),
+    ];
     raycaster.fx = arenaFx3d();
     // Tagged out, you watch through a teammate's eyes: their place and facing, with you as one of the people in view.
     const watched = arena.spectateTarget();
@@ -1277,6 +1317,7 @@ async function start() {
     if (!isOnline) {
       others.clear();
       arena.onArena({ t: 'arena', match: null });
+      jamClient.onMessage({ t: 'jam', room: null });
       links = [];
       conversation = null;
       convFull = false;

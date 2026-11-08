@@ -393,6 +393,21 @@ export class Renderer2D {
     }
     if (inside) this.drawDeskSpace(ctx, ox, oy, s, dpr, inside);
 
+    // Jam Rooms: a soft tint and a note beside the name, whether or not you are inside.
+    for (const area of this.built.areas) {
+      if (!area.jam) continue;
+      ctx.fillStyle = 'rgba(241, 196, 83, 0.10)';
+      for (const [x0, y0, x1, y1] of area.rects) ctx.fillRect(ox + x0 * s, oy + y0 * s, (x1 - x0 + 1) * s, (y1 - y0 + 1) * s);
+      const [x0, y0] = area.rects[0];
+      ctx.font = `800 ${Math.round(11 * k)}px sans-serif`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.fillText(`\u266A ${area.name}`, ox + x0 * s + 7 * k, oy + y0 * s + 5 * k);
+      ctx.fillStyle = '#f1c453';
+      ctx.fillText(`\u266A ${area.name}`, ox + x0 * s + 6 * k, oy + y0 * s + 4 * k);
+    }
+
     const sorted = [...players].sort((a, b) => a.y - b.y);
     const clock = Date.now();
     for (const p of sorted) {

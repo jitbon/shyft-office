@@ -636,3 +636,36 @@ body:has(#viewToggle [data-mode='2d'].on) #arenaHud .ahTop { top: 70px; }
 #arenaShop .asItem em { font-style: normal; font-size: 11px; color: var(--muted); }
 #arenaShop .asItem button { min-width: 72px; }
 #arenaShop .asNote { font-size: 11px; color: var(--muted); text-align: right; }
+
+/* ---------------------------------------------------------------- Jam Rooms */
+#jamCard { left: 16px; bottom: 150px; width: min(300px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 6px; z-index: 2; max-height: 60vh; overflow-y: auto; }
+#jamCard[hidden] { display: none; }
+#jamCard .jamHead { display: flex; align-items: center; gap: 8px; }
+#jamCard .jamTitle { font: 800 14px/1.2 var(--font); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#jamCard .jamListeners { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#jamCard .jamBody { display: flex; flex-direction: column; gap: 6px; }
+#jamCard .jamBody[hidden], #jamCard [hidden] { display: none; }
+#jamCard button { font-size: 12px; padding: 2px 10px; border-radius: var(--radius-pill); }
+#jamCard .jamClick { padding: 14px 10px; font: 800 14px/1.2 var(--font); background: var(--accent); color: var(--ink); border: 0; cursor: pointer; border-radius: var(--radius); }
+#jamCard .jamPlayerHost { display: none; width: 200px; height: 200px; margin: 0 auto; }
+#jamCard .jamPlayerHost.active { display: block; }
+#jamCard .jamPlayerHost iframe { width: 200px; height: 200px; border: 0; border-radius: 8px; }
+#jamCard .jamStation { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 8px; background: rgba(255, 255, 255, 0.05); }
+#jamCard .jamBars { width: 28px; height: 20px; background: repeating-linear-gradient(90deg, var(--accent) 0 4px, transparent 4px 8px); animation: jamBars 1.6s ease-in-out infinite alternate; transform-origin: bottom; }
+@keyframes jamBars { from { transform: scaleY(0.35); } to { transform: scaleY(1); } }
+@media (prefers-reduced-motion: reduce) { #jamCard .jamBars { animation: none; } }
+#jamCard .jamStationName { font: 800 13px/1.2 var(--font); }
+#jamCard .jamFailed { font-size: 12px; color: var(--accent); }
+#jamCard .jamTrackLine { font-size: 13px; overflow-wrap: anywhere; }
+#jamCard .jamControls { display: flex; align-items: center; gap: 8px; }
+#jamCard .jamVolume { flex: 1; min-width: 0; }
+#jamCard .jamQueue { margin: 0; padding-left: 18px; font-size: 12px; max-height: 18vh; overflow-y: auto; }
+#jamCard .jamQueue li { overflow-wrap: anywhere; }
+#jamCard .jamQBy { color: var(--muted); }
+#jamCard .jamRemove { margin-left: 6px; padding: 0 6px; }
+#jamCard .jamCount { font-size: 11px; color: var(--muted); }
+#jamCard .jamAddRow { display: flex; gap: 6px; }
+#jamCard .jamInput { flex: 1; min-width: 0; }
+#jamCard .jamMessage { font-size: 12px; color: var(--accent); min-height: 0; }
+#jamCard.folded { gap: 2px; }
+#jamCard.folded .jamBody > :not(.jamPlayerHost) { display: none; }

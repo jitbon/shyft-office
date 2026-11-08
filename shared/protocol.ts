@@ -172,6 +172,14 @@ export type ClientMsg =
   | { t: 'ink'; shareId: string; strokeId: number; seq: number; pts: number[]; end?: true; keep?: true }
   | { t: 'inkClear'; shareId: string; scope: 'mine' | 'all' }
   | { t: 'inkAllow'; shareId: string; on: boolean }
+  /** Jam Room: queue a song from a pasted link, remove one of your own, or skip the one playing. */
+  | { t: 'jam'; op: 'add'; url: string }
+  | { t: 'jam'; op: 'remove'; id: string }
+  | { t: 'jam'; op: 'skip' }
+  /** A listener's player reports the current track's length, in seconds. */
+  | { t: 'jamTrack'; id: string; len: number }
+  /** This listener's player cannot play the current track. */
+  | { t: 'jamFail'; id: string }
   | ({ t: 'admin' } & AdminOp);
 
 export type ServerMsg =
@@ -223,6 +231,9 @@ export type ServerMsg =
       avatar?: AvatarChoice;
     }
   | ({ t: 'office' } & OfficeSnapshot)
+  /** Jam Room state, to the room's listeners only. `room: null` is sent once to someone who has just stopped being one. */
+  | JamState
+  | { t: 'jamNote'; text: string }
   | { t: 'correct'; x: number; y: number; reason: 'full' | 'restricted' | 'locked' | 'arena'; areaId?: string; deskId?: string }
   | { t: 'teleport'; x: number; y: number; reason: 'ring' | 'desk' | 'layout' | 'arena'; a?: number; back?: true }
   /** A new layout was published: fetch `GET /api/layout?rev=<rev>`. */
@@ -290,4 +301,28 @@ export type ServerMsg =
       /** Sent to the admin who reloaded: sheets that were skipped, and sheets that work but need a look. */
       rejected?: { file: string; errors: string[] }[];
       warnings?: { file: string; warning: string }[];
+    };
+
+export interface JamTrackInfo {
+  id: string;
+  provider: 'youtube';
+  ref: string;
+  title: string;
+  byName: string;
+}
+
+export type JamState =
+  | { t: 'jam'; room: null }
+  | {
+      t: 'jam';
+      room: string;
+      name: string;
+      /** The server's clock, in ms. */
+      now: number;
+      mode: 'station' | 'track';
+      station: { seed: number; epoch: number };
+      track?: JamTrackInfo & { startedAt: number; len?: number };
+      queue: (JamTrackInfo & { mine: boolean })[];
+      /** Names, in join order. */
+      listeners: string[];
     };

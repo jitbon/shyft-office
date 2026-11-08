@@ -25,6 +25,7 @@ import { pinnedVersions } from '../shared/items-edit';
 import { JUMP_COOLDOWN_MS } from '../shared/jump';
 import { LinkEngine } from './links';
 import { MatchEngine } from './arena';
+import { JamEngine, REFUSALS, type JamTimings, type TitleLookup } from './jam';
 import { moveAllowed, type Timings } from '../shared/arena';
 import { ShareRegistry } from './shares';
 import { OfficeState } from './office';
@@ -66,6 +67,12 @@ export interface ServerOptions {
   arenaTimings?: Timings;
   /** Fixed team spawn points for Office Arena, instead of ones worked out from the layout. For tests. */
   arenaSpawns?: Record<'blue' | 'orange', { x: number; y: number }[]>;
+  /** How often Jam Rooms are ticked and how long the gap between songs is; tests shorten both. */
+  jamTimings?: JamTimings;
+  /** Looks up a song's title; tests replace it so nothing touches the network. */
+  jamLookup?: TitleLookup;
+  /** The clock Jam Rooms use, in ms; tests drive it. */
+  jamNow?: () => number;
 }
 
 export interface RunningServer {
@@ -215,6 +222,9 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
   };
   /** Per-connection limits, keyed `<what>:<player id>`; see PER_SECOND. */
   const perSecond = new RateWindow(1000);
+  /** Jam Room limits, per minute: adding songs is the costly one (it asks the provider for a title). */
+  const perMinute = new RateWindow(60_000);
+  const JAM_LIMITS = { add: { count: 6 }, other: { count: 20 } } satisfies Record<string, Limit>;
   const within = (what: keyof typeof PER_SECOND, id: string, weight = 0) => perSecond.take(`${what}:${id}`, PER_SECOND[what], weight);
   /** One jump at a time per person. */
   const jumpCooldown = new Cooldown(JUMP_COOLDOWN_MS - 50);
@@ -340,13 +350,17 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       c.p.y = y;
       c.p.a = a;
       c.moveFrom = { x, y, at: Date.now() };
+      syncJam(c);
       send(c.ws, { t: 'teleport', x, y, a, reason: 'arena', ...(back ? { back: true as const } : {}) });
       broadcast({ t: 'state', id, x, y, a, mode: c.p.mode, moving: false }, c.ws);
       if (areaAt(x, y)?.id !== undefined) broadcastOffice();
     },
     world: () => getWorld(),
     enabled: () => office.arenaEnabled,
-    changed: () => links.update(),
+    changed: () => {
+      links.update();
+      syncJamAll(); // players in a match are never listeners
+    },
     timings: opts.arenaTimings,
     spawns: opts.arenaSpawns,
   });
@@ -354,6 +368,33 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
   office.matchPlayers = () => arena.players();
   const arenaTimer = setInterval(() => arena.tick(), opts.arenaTimings ? 20 : 100);
   arenaTimer.unref();
+  const jam = new JamEngine({
+    send: sendTo,
+    nameOf: (id) => byId.get(id)?.p.name ?? 'Someone',
+    memberOf: (id) => byId.get(id)?.p.memberId ?? id,
+    inArena: (id) => arena.isPlayer(id),
+    rooms: () => new Map(AREAS.filter((a) => a.jam).map((a) => [a.id, a.name])),
+    now: opts.jamNow,
+    lookup: opts.jamLookup,
+    timings: opts.jamTimings,
+  });
+  /** The Jam Room a player stands in, if it is one and they are not in a match. */
+  const jamRoomFor = (c: Conn): string | null => {
+    if (arena.isPlayer(c.p.id)) return null;
+    const area = areaAt(c.p.x, c.p.y);
+    return area?.jam ? area.id : null;
+  };
+  /** Makes the player a listener of the Jam Room they stand in, or not a listener of any. */
+  function syncJam(c: Conn) {
+    const want = jamRoomFor(c);
+    if (want === jam.roomOf(c.p.id)) return;
+    if (want === null || !jam.enter(c.p.id, want)) jam.leave(c.p.id);
+  }
+  const syncJamAll = () => {
+    for (const c of conns.values()) syncJam(c);
+  };
+  const jamTimer = setInterval(() => jam.tick(), jam.tickMs);
+  jamTimer.unref();
   /** Rings waiting for an answer, keyed `<ringer>><recipient>`, and when each was last sent. */
   const rings = new Map<string, number>();
   const lastWave = new Map<string, number>();
@@ -423,6 +464,8 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       c.p.y = spot.y;
       send(c.ws, { t: 'teleport', ...spot, reason: 'layout' });
     }
+    jam.roomsChanged(); // rooms that stopped being Jam Rooms close, then people standing in new ones join
+    syncJamAll();
     broadcast({ t: 'layout', rev: rev.rev, by: { name: by.name }, at: rev.at });
     broadcastOffice();
     links.update();
@@ -521,6 +564,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       const after = areaAt(me.x, me.y)?.id ?? null;
       if (before !== after) {
         office.noteMove(me.memberId, before, after);
+        syncJam(conn);
         broadcastOffice();
       }
       if (office.afterMove(me)) broadcastOffice(); // leaving your desk unlocks it
@@ -787,6 +831,13 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (!within('arena', me.id) || typeof msg.item !== 'string') return;
       const refused = arena.buy(me.id, msg.item);
       if (refused) send(ws, { t: 'notify', kind: 'error', text: refused });
+    } else if (msg.t === 'jam' || msg.t === 'jamTrack' || msg.t === 'jamFail') {
+      const adding = msg.t === 'jam' && msg.op === 'add';
+      if (!perMinute.take(`jam:${me.id}`, adding ? JAM_LIMITS.add : JAM_LIMITS.other)) {
+        if (adding) send(ws, { t: 'notify', kind: 'error', text: REFUSALS.rate });
+        return;
+      }
+      jam.handle(me.id, msg);
     } else if (msg.t === 'ink' || msg.t === 'inkClear' || msg.t === 'inkAllow') {
       handleInk(ws, me, msg);
     } else if (msg.t === 'rtc') {
@@ -836,8 +887,10 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
   function onClose(ws: WebSocket) {
     const c = conns.get(ws);
     if (!c) return;
+    jam.leave(c.p.id, true);
     conns.delete(ws);
     byId.delete(c.p.id);
+    perMinute.forget(`jam:${c.p.id}`);
     for (const what of Object.keys(PER_SECOND)) perSecond.forget(`${what}:${c.p.id}`);
     jumpCooldown.forget(c.p.id);
     inkSlowCooldown.forget(c.p.id);
@@ -880,6 +933,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       clearInterval(pinger);
       clearInterval(pruner);
       clearInterval(arenaTimer);
+      clearInterval(jamTimer);
       reject(err); // e.g. the port is already in use
     });
     server.listen(opts.port, () => {
@@ -894,6 +948,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
             clearInterval(pinger);
             clearInterval(pruner);
             clearInterval(arenaTimer);
+            clearInterval(jamTimer);
             for (const ws of wss.clients) ws.terminate();
             wss.close(() => server.close(() => done()));
           }),

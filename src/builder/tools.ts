@@ -478,7 +478,7 @@ export function deleteRegion(l: Layout, kind: RegionKind, id: string): Layout {
   return c;
 }
 
-export interface RoomPatch { name?: string; private?: boolean; capacity?: number | null; restricted?: boolean }
+export interface RoomPatch { name?: string; private?: boolean; capacity?: number | null; restricted?: boolean; jam?: boolean }
 
 export function updateRoom(l: Layout, id: string, patch: RoomPatch): Edit {
   const c = cloneLayout(l);
@@ -490,6 +490,10 @@ export function updateRoom(l: Layout, id: string, patch: RoomPatch): Edit {
     r.highlight = patch.private;
   }
   if (patch.restricted !== undefined) r.restricted = patch.restricted;
+  if (patch.jam !== undefined) {
+    if (patch.jam) r.jam = true;
+    else delete r.jam;
+  }
   if (patch.capacity !== undefined) {
     if (patch.capacity === null || !Number.isFinite(patch.capacity)) delete r.capacity;
     else r.capacity = Math.min(50, Math.max(1, Math.round(patch.capacity)));

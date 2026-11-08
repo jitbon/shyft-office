@@ -63,6 +63,17 @@ other than localhost the browser will not allow the camera, though chat and walk
   meet each other: they are kept out of meeting rooms and other people's desks, can't build, share a screen or change
   character, and their voice is separate from the rest of the office. Everyone else keeps working, and is never hit or
   told anything private; they see team rings, tracers and a banner. Admins can switch the Arena off in the Admin panel.
+- **Jam rooms.** Walk into a Jam Room (the Kitchen is one) and music starts for everyone inside, in step with each other:
+  an original generated "Office Lofi" station plays by default, with no audio files, and works offline. A **Now playing**
+  card shows who is listening. To queue a song, **paste a link** into the card and press Enter: YouTube links work
+  (`youtube.com`, `m.youtube.com`, `music.youtube.com`, `youtu.be`, and `/shorts/`, `/embed/` and `/live/` links); only the
+  video id is kept, so playlists and times in a link are ignored. Songs play through YouTube's own embedded player in each
+  listener's browser, so the office never stores or re-streams any audio. The queue holds 20 songs, 3 per person; you can
+  remove your own, anyone inside can **Skip**, and the station takes over when the queue is empty. Volume and mute are
+  yours alone (remembered in your browser), and the music dips under voices and shared-screen sound. A song that can't be
+  embedded or played is skipped with a note. Only people inside the room receive anything from it. Anyone who can build marks
+  a room as a Jam Room with the **Jam Room** checkbox in the Rooms tab, and unmarking it stops the music for those inside.
+  Marked rooms show a tint and a note mark in both views.
 - **Your character.** On the join screen choose *Built-in* or *Custom* (a character, or parts, from the sheets in
   `sprites/`). Built-in has hairstyles, faces, skin tones, tops, bottoms, shoes and accessories, each with colours
   where they make sense, a live front, side and back preview, and **Surprise me** for a matching random look. The
