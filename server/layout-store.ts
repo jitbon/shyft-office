@@ -98,7 +98,7 @@ export class LayoutStore {
     const revision = (v: unknown): Revision | null => {
       const r = v as Partial<Revision> | null;
       if (!r || !Number.isInteger(r.rev) || (r.rev as number) < 1) return null;
-      const parsed = parseLayoutWith(dropUnknownObjects(r.layout, catalog), catalog);
+      const parsed = parseLayoutWith(dropUnknownObjects(r.layout, catalog), catalog, { lenient: true });
       if (!parsed.ok) return null;
       const by = r.by as Partial<Publisher> | undefined;
       return {
@@ -154,7 +154,7 @@ export class LayoutStore {
     } catch {
       return null;
     }
-    const parsed = parseLayoutWith(dropUnknownObjects(json.layout, this.catalog()), this.catalog());
+    const parsed = parseLayoutWith(dropUnknownObjects(json.layout, this.catalog()), this.catalog(), { lenient: true });
     if (!parsed.ok || !Number.isInteger(json.baseRev)) return null;
     return { baseRev: json.baseRev as number, layout: parsed.layout, savedAt: typeof json.savedAt === 'number' ? json.savedAt : 0 };
   }

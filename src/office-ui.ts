@@ -296,6 +296,9 @@ export function facedDesk(): string | null {
   return null;
 }
 
+/** The name of whoever holds a desk, if anyone does. */
+export const deskOwnerName = (deskId: string): string | undefined => office?.desks.find((d) => d.id === deskId)?.owner?.name;
+
 /** Desk id to the member id of its owner, for every claimed desk (what desk presence needs to tell your own desk). */
 export function deskOwners(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -311,10 +314,20 @@ export function deskTitle(deskId: string): string {
 }
 
 /** Shows or hides the small "Your desk" cue. */
-export function showDeskCue(text: string | null) {
+export function showDeskCue(text: string | null, customize: (() => void) | null = null) {
   const el = $('deskCue');
   el.hidden = !text;
-  if (text && el.textContent !== text) el.textContent = text;
+  if (!text) return;
+  let label = el.querySelector('.cueText') as HTMLElement | null;
+  let button = el.querySelector('.cueBtn') as HTMLButtonElement | null;
+  if (!label || !button) {
+    label = Object.assign(document.createElement('span'), { className: 'cueText' });
+    button = Object.assign(document.createElement('button'), { type: 'button', className: 'cueBtn', textContent: 'Customize desk' });
+    el.replaceChildren(label, button);
+  }
+  if (label.textContent !== text) label.textContent = text;
+  button.hidden = !customize;
+  button.onclick = customize;
 }
 
 /** Shows or hides the "press F" hint. */

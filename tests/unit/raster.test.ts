@@ -70,3 +70,20 @@ describe('fillFace', () => {
     expect(changes).toBeGreaterThanOrEqual(3); // red, green, red, green
   });
 });
+
+describe('shadeRGB', () => {
+  it('matches shade exactly with neutral light and black fog', async () => {
+    const { shade, shadeRGB, NEUTRAL_LIGHT } = await import('../../src/raster');
+    for (const c of [0xff102030, 0xffffffff, 0xff7f3a99, 0xff000000]) for (const f of [1, 0.9, 0.5, 0.35]) expect(shadeRGB(c, f, NEUTRAL_LIGHT)).toBe(shade(c, f));
+  });
+
+  it('tints by the light and fades toward the fog color as light is lost', async () => {
+    const { shadeRGB } = await import('../../src/raster');
+    const warm = { r: 1.2, g: 1, b: 0.8, fr: 0, fg: 0, fb: 0 };
+    const c = 0xff808080;
+    const out = shadeRGB(c, 1, warm);
+    expect([out & 255, (out >>> 8) & 255, (out >>> 16) & 255]).toEqual([153, 128, 102]);
+    const fogged = shadeRGB(0xff000000, 0.5, { r: 1, g: 1, b: 1, fr: 100, fg: 0, fb: 0 });
+    expect(fogged & 255).toBe(50);
+  });
+});

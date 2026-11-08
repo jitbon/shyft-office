@@ -3,7 +3,12 @@ import type { WorldObject } from '../shared/world';
 import { frameAt, viewCanvas } from './custom-objects';
 import { drawablesOf, isPictured, tileSignatures, type Drawable } from './drawables';
 import { flatPicture, itemPicture } from './item2d';
-import { TILE, drawFloor, drawFurniture2D, drawTurned2D, drawWall2D, drawWelcomeMat, makeCanvas, type Dir } from './art';
+import { TILE, drawFurniture2D, drawTurned2D, drawWall2D, drawWelcomeMat, makeCanvas, withPalette, type Dir, type Texture } from './art';
+import { legacyPalette } from './finish';
+import { paletteFor } from './palette';
+import { floorPixels, seasonIn, wallFaceTexture } from './surfaces';
+import { seasonLayer } from './seasonal';
+import { themeById } from '../shared/themes';
 import { outlineEdges } from '../shared/desk-presence';
 import { hopHeight } from '../shared/jump';
 import type { DeskTag } from './office-ui';
@@ -46,11 +51,39 @@ const customIn = (w: World) => {
   return list;
 };
 
+const layerCanvases = new WeakMap<Texture, HTMLCanvasElement>();
+/** A seasonal touch as a canvas, so it can be drawn over a wall (putImageData would replace what is under the clear pixels). */
+function layerCanvas(layer: Texture): HTMLCanvasElement {
+  let c = layerCanvases.get(layer);
+  if (!c) {
+    const [canvas, cctx] = makeCanvas(layer.w, layer.h);
+    cctx.putImageData(imageOf(layer), 0, 0);
+    layerCanvases.set(layer, (c = canvas));
+  }
+  return c;
+}
+
+const imageCache = new WeakMap<Texture, ImageData>();
+/** A finished 32×32 picture as something a canvas can draw. */
+function imageOf(tex: Texture): ImageData {
+  let img = imageCache.get(tex);
+  if (!img) imageCache.set(tex, (img = new ImageData(new Uint8ClampedArray(tex.data.buffer as ArrayBuffer, tex.data.byteOffset, tex.data.byteLength), tex.w, tex.h)));
+  return img;
+}
+
+/** The office theme and room styles. When they change the whole map is painted again. */
+const themeSignature = (w: World) => JSON.stringify([w.layout.theme, w.layout.seasonal === true, w.layout.rooms.map((r) => [r.id, r.rects, r.style?.theme ?? ''])]);
+/** What a tile's floor and wall are painted with, so a repaint touches only the tiles whose paint changed. */
+const paintSignature = (w: World, x: number, y: number) => {
+  const f = w.paintAt(x, y, 'floor'), a = w.wallFacePaint(x, y, 's');
+  return `${f.key}|${f.color}|${a.key}|${a.color}`;
+};
+
 /** Paints one tile's floor and what stands on it (the whole map is this, tile by tile). `drawn` stops a turned piece being painted once per tile. */
 function paintTile(ctx: CanvasRenderingContext2D, w: World, x: number, y: number, pass: 'floor' | 'top', drawn: Set<string>) {
   const t = gridAt(w, x, y);
   if (pass === 'floor') {
-    drawFloor(ctx, w.floor[y][x], x * TILE, y * TILE, x, y);
+    ctx.putImageData(imageOf(floorPixels(w, x, y)), x * TILE, y * TILE);
     if (t === 'S') drawWelcomeMat(ctx, x * TILE, y * TILE);
     // Floor art lies on the floor, in list order, so the later piece is on top.
     for (const a of w.floorArt) {
@@ -61,19 +94,37 @@ function paintTile(ctx: CanvasRenderingContext2D, w: World, x: number, y: number
     return;
   }
   if (WALLS.has(t)) {
-    drawWall2D(ctx, t, x * TILE, y * TILE, !WALLS.has(gridAt(w, x, y + 1)), y > 0 && !WALLS.has(gridAt(w, x, y - 1)));
+    // The cap and the face follow the style of the floor the wall looks onto.
+    const base = paletteFor(themeById(w.styleAt(x, Math.min(w.h - 1, y + 1))));
+    const paint = w.wallFacePaint(x, y, 's');
+    const plaster = paint.finish.painter === 'legacy-plaster';
+    const pal = plaster ? legacyPalette(paint.finish, paint.color, base) : base;
+    const face = plaster || t !== '#' ? undefined : (c: CanvasRenderingContext2D, fx: number, fy: number) => c.putImageData(imageOf(wallFaceTexture(w, x, y, 's')), fx, fy - 12, 0, 12, TILE, 20);
+    const faceVisible = !WALLS.has(gridAt(w, x, y + 1));
+    withPalette(pal, () => drawWall2D(ctx, t, x * TILE, y * TILE, faceVisible, y > 0 && !WALLS.has(gridAt(w, x, y - 1)), face));
+    // Seasonal touches go over the finished face: frost on a window, a garland along a plain wall.
+    const season = seasonIn(w);
+    if (season && faceVisible && (t === 'G' || t === '#')) {
+      const layer = seasonLayer(t, themeById(w.styleAt(x, Math.min(w.h - 1, y + 1))).seasons[season], 12);
+      ctx.drawImage(layerCanvas(layer), 0, 12, TILE, 20, x * TILE, y * TILE + 12, TILE, 20);
+    }
   } else if (FURNITURE.has(t)) {
-    const o = facingAt(w, x, y);
-    const nb = (dx: number, dy: number) => gridAt(w, x + dx, y + dy);
-    const rot = o?.obj.rot;
-    if (o && (rot === 1 || rot === 3 || (rot !== 0 && t === 's'))) {
-      // Turned west or east (or a turned sofa): the whole piece is drawn once, facing south, and turned.
-      if (!drawn.has(o.obj.id)) {
-        drawn.add(o.obj.id);
-        drawTurned2D(ctx, t, o.obj.rot, o.x * TILE, o.y * TILE, o.w, o.d);
-      }
-    } else drawFurniture2D(ctx, t, x * TILE, y * TILE, nb, rot);
+    // Built-in furniture wears the colors of the theme that applies where it stands.
+    withPalette(paletteFor(themeById(w.styleAt(x, y))), () => paintFurnitureTile(ctx, w, x, y, t, drawn));
   }
+}
+
+function paintFurnitureTile(ctx: CanvasRenderingContext2D, w: World, x: number, y: number, t: string, drawn: Set<string>) {
+  const o = facingAt(w, x, y);
+  const nb = (dx: number, dy: number) => gridAt(w, x + dx, y + dy);
+  const rot = o?.obj.rot;
+  if (o && (rot === 1 || rot === 3 || (rot !== 0 && t === 's'))) {
+    // Turned west or east (or a turned sofa): the whole piece is drawn once, facing south, and turned.
+    if (!drawn.has(o.obj.id)) {
+      drawn.add(o.obj.id);
+      drawTurned2D(ctx, t, o.obj.rot, o.x * TILE, o.y * TILE, o.w, o.d);
+    }
+  } else drawFurniture2D(ctx, t, x * TILE, y * TILE, nb, rot);
 }
 
 /** Wall decor on a face other than the south one is a thin strip along that edge of the wall tile. */
@@ -131,12 +182,14 @@ export function buildMapCanvas(w: World = getWorld()): HTMLCanvasElement {
  */
 export function updateMapCanvas(c: HTMLCanvasElement, prev: World, next: World): boolean {
   if (prev.w !== next.w || prev.h !== next.h) return false;
+  if (themeSignature(prev) !== themeSignature(next)) return false;
   const changed = new Set<number>();
   const before = tileSignatures(prev), after = tileSignatures(next);
   for (let y = 0; y < next.h; y++) {
     for (let x = 0; x < next.w; x++) {
       // A chair or desk turned on the spot leaves the same tile code but looks different; so does a picture that moved.
       if (prev.grid[y][x] !== next.grid[y][x] || prev.floor[y][x] !== next.floor[y][x]
+        || paintSignature(prev, x, y) !== paintSignature(next, x, y)
         || facingAt(prev, x, y)?.obj.rot !== facingAt(next, x, y)?.obj.rot
         || before[y * next.w + x] !== after[y * next.w + x]) changed.add(y * next.w + x);
     }
@@ -280,6 +333,8 @@ export class Renderer2D {
   deskTags: DeskTag[] = [];
   /** The desk space you are standing in, drawn with a strong fill and an edge; null when you are in none. */
   deskPresence: { tiles: readonly { x: number; y: number }[]; mine: boolean } | null = null;
+  /** The Customize desk panel's unsaved look: its picture of the desk space (a TILE-sized pixel canvas) at tile (x, y). Drawn dashed. */
+  deskDraft: { x: number; y: number; w: number; h: number; picture: CanvasImageSource } | null = null;
   private view = { ox: 0, oy: 0, s: TILE, dpr: 1 };
 
   /** The desk space you are in: a strong fill over every tile and an edge along its outside (warm for your own, cool for another's). */
@@ -319,6 +374,11 @@ export class Renderer2D {
     if (world === this.built) return;
     if (!updateMapCanvas(this.map, this.built, world)) this.map = buildMapCanvas(world);
     this.built = world;
+  }
+
+  /** Paints the whole map again from the world already shown. */
+  repaint() {
+    this.map = buildMapCanvas(this.built);
   }
 
   /** The world being shown. */
@@ -392,6 +452,16 @@ export class Renderer2D {
       if (tag.mine && !(inside && sameTiles(inside.tiles, tag.tiles))) for (const t of tag.tiles) ctx.fillRect(ox + t.x * s, oy + t.y * s, s, s);
     }
     if (inside) this.drawDeskSpace(ctx, ox, oy, s, dpr, inside);
+    const draft = this.deskDraft;
+    if (draft) {
+      ctx.drawImage(draft.picture, 0, 0, draft.w * TILE, draft.h * TILE, ox + draft.x * s, oy + draft.y * s, draft.w * s, draft.h * s);
+      ctx.save();
+      ctx.setLineDash([6 * dpr, 4 * dpr]);
+      ctx.lineWidth = 2 * dpr;
+      ctx.strokeStyle = '#f1c453';
+      ctx.strokeRect(ox + draft.x * s, oy + draft.y * s, draft.w * s, draft.h * s);
+      ctx.restore();
+    }
 
     // Jam Rooms: a soft tint and a note beside the name, whether or not you are inside.
     for (const area of this.built.areas) {
@@ -399,12 +469,16 @@ export class Renderer2D {
       ctx.fillStyle = 'rgba(241, 196, 83, 0.10)';
       for (const [x0, y0, x1, y1] of area.rects) ctx.fillRect(ox + x0 * s, oy + y0 * s, (x1 - x0 + 1) * s, (y1 - y0 + 1) * s);
       const [x0, y0] = area.rects[0];
+      // Room labels use their theme's ink on a 2 px halo of its own color, so they read on any floor.
+      const theme = themeById(this.built.styleAt(x0, y0));
       ctx.font = `800 ${Math.round(11 * k)}px sans-serif`;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'top';
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
-      ctx.fillText(`\u266A ${area.name}`, ox + x0 * s + 7 * k, oy + y0 * s + 5 * k);
-      ctx.fillStyle = '#f1c453';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = 2 * 2 * Math.max(1, k / 2);
+      ctx.strokeStyle = theme.labelHalo;
+      ctx.strokeText(`\u266A ${area.name}`, ox + x0 * s + 6 * k, oy + y0 * s + 4 * k);
+      ctx.fillStyle = theme.labelInk;
       ctx.fillText(`\u266A ${area.name}`, ox + x0 * s + 6 * k, oy + y0 * s + 4 * k);
     }
 

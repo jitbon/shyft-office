@@ -1,7 +1,7 @@
 // All art is generated in code: no image assets to load or license.
 import type { AvatarChoice, Layer, Look, SpriteIndex } from '../shared/protocol';
 import { COLS, LAYER_ORDER, ROW_DIRS } from '../shared/sprites';
-import { PALETTE as P, light, mix, shade } from './palette';
+import { PALETTE, light, mix, shade, type Palette } from './palette';
 import { TILE } from './scale';
 import { rect, round } from './wardrobe/draw';
 import { paintCharacter } from './wardrobe/paint';
@@ -38,6 +38,21 @@ export function hash(x: number, y: number) {
   let h = (x * 374761393 + y * 668265263) | 0;
   h = Math.imul(h ^ (h >>> 13), 1274126177);
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+/**
+ * The colors every painter below reads. It is Warm Studio unless a draw call is wrapped in `withPalette`, which swaps another
+ * theme's colors in for the length of that call (drawing is synchronous, so nothing else sees them).
+ */
+let P: Palette = PALETTE;
+export function withPalette<T>(palette: Palette, draw: () => T): T {
+  const before = P;
+  P = palette;
+  try {
+    return draw();
+  } finally {
+    P = before;
+  }
 }
 
 type Ctx = CanvasRenderingContext2D;
@@ -277,7 +292,7 @@ export function drawWelcomeMat(ctx: Ctx, ox: number, oy: number) {
  * The front of a wall: the part with windows, shelves and so on. It is `h` pixels tall and TILE wide. The top-down
  * view shows 20 rows under the cap; first person shows the whole 32.
  */
-function paintWallFace(ctx: Ctx, kind: string, x: number, y: number, h: number) {
+export function paintWallFace(ctx: Ctx, kind: string, x: number, y: number, h: number) {
   const f = P.wallFace;
   const body = h - 5; // everything above the baseboard
   const base = () => {
@@ -386,7 +401,11 @@ function paintWallFace(ctx: Ctx, kind: string, x: number, y: number, h: number) 
  * Walls are drawn in a 3/4 view: a dark cap, plus a front face when the
  * tile below is open floor, which is where windows, shelves etc. show.
  */
-export function drawWall2D(ctx: Ctx, kind: string, ox: number, oy: number, faceVisible: boolean, edgeAbove: boolean) {
+export function drawWall2D(
+  ctx: Ctx, kind: string, ox: number, oy: number, faceVisible: boolean, edgeAbove: boolean,
+  /** Draws the front of a plain wall in place of the plaster (a painted finish). */
+  face?: (ctx: Ctx, x: number, y: number, h: number) => void,
+) {
   const c = P.wallCap;
   rect(ctx, c.base, ox, oy, TILE, TILE);
   for (let i = 0; i < 8; i++) {
@@ -397,7 +416,8 @@ export function drawWall2D(ctx: Ctx, kind: string, ox: number, oy: number, faceV
   if (!faceVisible) return;
   rect(ctx, mix(c.base, c.light, 0.35), ox, oy + 8, TILE, 2);
   rect(ctx, c.shadow, ox, oy + 10, TILE, 2);
-  paintWallFace(ctx, kind, ox, oy + 12, 20);
+  if (face && kind === '#') face(ctx, ox, oy + 12, 20);
+  else paintWallFace(ctx, kind, ox, oy + 12, 20);
 }
 
 // -------------------------------------------------- furniture (2D view)
@@ -650,22 +670,24 @@ export function makeFloorTextures(): Record<string, Texture> {
   return out;
 }
 
-export function makeCeilingTextures() {
+/** One ceiling panel, plain or with a lamp. */
+export function paintCeiling(ctx: Ctx, lit: boolean) {
   const c = P.ceiling;
-  const paint = (lit: boolean) => (ctx: Ctx) => {
-    rect(ctx, c.base, 0, 0, TEX, TEX);
-    for (let i = 0; i < 40; i++) rect(ctx, c.speck, Math.floor(hash(i, 9) * TEX), Math.floor(hash(i, 8) * TEX), 1, 1);
-    rect(ctx, c.line, 0, 0, TEX, 1);
-    rect(ctx, c.line, 0, 0, 1, TEX);
-    rect(ctx, light(c.base, 0.5), 1, 1, TEX - 1, 1);
-    rect(ctx, light(c.base, 0.5), 1, 1, 1, TEX - 1);
-    if (lit) {
-      rect(ctx, c.lamp, 5, 5, 22, 22);
-      rect(ctx, c.glow, 7, 7, 18, 18);
-      rect(ctx, '#ffffff', 11, 11, 10, 10);
-    }
-  };
-  return { plain: tex(TEX, TEX, paint(false)), light: tex(TEX, TEX, paint(true)) };
+  rect(ctx, c.base, 0, 0, TEX, TEX);
+  for (let i = 0; i < 40; i++) rect(ctx, c.speck, Math.floor(hash(i, 9) * TEX), Math.floor(hash(i, 8) * TEX), 1, 1);
+  rect(ctx, c.line, 0, 0, TEX, 1);
+  rect(ctx, c.line, 0, 0, 1, TEX);
+  rect(ctx, light(c.base, 0.5), 1, 1, TEX - 1, 1);
+  rect(ctx, light(c.base, 0.5), 1, 1, 1, TEX - 1);
+  if (lit) {
+    rect(ctx, c.lamp, 5, 5, 22, 22);
+    rect(ctx, c.glow, 7, 7, 18, 18);
+    rect(ctx, '#ffffff', 11, 11, 10, 10);
+  }
+}
+
+export function makeCeilingTextures() {
+  return { plain: tex(TEX, TEX, (ctx) => paintCeiling(ctx, false)), light: tex(TEX, TEX, (ctx) => paintCeiling(ctx, true)) };
 }
 
 export interface SpriteArt {

@@ -1,20 +1,26 @@
 // A raycaster for the walls over the same tile map as the 2D view, with solid furniture drawn into the same frame.
 // It renders into a framebuffer a few hundred pixels tall that gets scaled up with no smoothing, so it stays crisp pixel art.
 // Every pixel keeps its distance, so furniture hides people behind it and people in front of it hide the furniture.
-import { MAP_H, MAP_W, baseFloor, getWorld, isWall, tileAt } from '../shared/map';
+import { MAP_H, MAP_W, getWorld, isWall, tileAt } from '../shared/map';
+import type { World } from '../shared/world';
 import {
-  TEX, hash, makeCanvas, makeCeilingTextures, makeFloorTextures, makeMaterials, makeWallTextures,
+  TEX, hash, makeCanvas, makeMaterials,
   type Dir, type SpriteArt, type Texture,
 } from './art';
 import { viewTexture } from './custom-objects';
 import { isStyleMat, materialFor } from './materials';
 import { makeCam, visibleFaces, worldMeshes, type ObjectMesh } from './mesh3d';
 import { bakedFloorCell } from './floorart';
-import { fillFace, fog, shade } from './raster';
+import { ceilingTextures, floorCell, plainWallFace, wallFaceTexture } from './surfaces';
+import { fillFace, fog, isNeutral, shade, shadeRGB, type Light } from './raster';
+import { themeById } from '../shared/themes';
+import { withPalette } from './art';
+import { paletteFor } from './palette';
 import { hopHeight } from '../shared/jump';
 import { horizonRow } from './look';
 import { walkFrame, type Player } from './types';
 
+const FACE_INDEX = { n: 0, e: 1, s: 2, w: 3 } as const;
 const PLANE = 0.66; // camera plane half-width -> ~67 degree field of view
 const RENDER_H = 360;
 const AVATAR_SIZE = 0.62;
@@ -79,26 +85,64 @@ export class Raycaster {
   /** Distance of whatever was drawn at each pixel; Infinity where nothing solid was. */
   private depth!: Float32Array;
 
-  private walls = makeWallTextures();
-  private ceil = makeCeilingTextures();
+  /** Per map cell, the four faces of a wall (north, east, south, west) as seen from the floor in front, and the plain wall above a tall one. */
+  private wallFaces: Texture[] = [];
+  private plainFaces: Texture[] = [];
+  private ceil = ceilingTextures('warm-studio');
+  /** What a wall outside the map looks like. */
+  private defaultWall: Texture = plainWallFace(getWorld(), 0, 0, 's');
   private floorCells: Texture[] = [];
   private ceilCells: Texture[] = [];
   private meshes: ObjectMesh[] = [];
-  private mats = makeMaterials();
-
-  private floors = makeFloorTextures();
+  /** Solid-furniture surfaces per theme, made the first time a theme is seen. */
+  private matCache = new Map<string, Record<string, Texture>>();
+  private meshTheme: string[] = [];
+  /** Extra tint multiplied onto the theme's light: time of day and season. Set by the caller before each render. */
+  extraLight = { r: 1, g: 1, b: 1 };
 
   constructor() {
     [this.canvas, this.ctx] = makeCanvas(1, 1);
     this.rebuild();
   }
 
-  /** Reads the current office again. Call it after the world changes. */
-  rebuild() {
+  private matsFor(themeId: string): Record<string, Texture> {
+    let m = this.matCache.get(themeId);
+    if (!m) this.matCache.set(themeId, (m = withPalette(paletteFor(themeById(themeId)), makeMaterials)));
+    return m;
+  }
+
+  /** The light at the camera: the theme there, blended over about a tile with what lies beside it, times the extra tint. */
+  private lightAt(px: number, py: number): Light {
+    const world = this.world;
+    const pts: [number, number, number][] = [[0, 0, 0.6], [0.5, 0, 0.1], [-0.5, 0, 0.1], [0, 0.5, 0.1], [0, -0.5, 0.1]];
+    let r = 0, g = 0, b = 0, fr = 0, fg = 0, fb = 0;
+    for (const [dx, dy, wt] of pts) {
+      const t = themeById(world.styleAt(Math.floor(px + dx), Math.floor(py + dy))).light;
+      r += t.r * wt;
+      g += t.g * wt;
+      b += t.b * wt;
+      const n = parseInt(t.fog.slice(1), 16);
+      fr += ((n >> 16) & 255) * wt;
+      fg += ((n >> 8) & 255) * wt;
+      fb += (n & 255) * wt;
+    }
+    const e = this.extraLight;
+    return { r: r * e.r, g: g * e.g, b: b * e.b, fr, fg, fb };
+  }
+
+  /** The world this view draws; the office's own unless a caller handed in another (the desk preview). */
+  private world: World = getWorld();
+
+  /** Reads the current office again, or `world` when given (walls still come from the office). Call it after the world changes. */
+  rebuild(world: World = getWorld()) {
+    this.world = world;
     this.floorCells = [];
     this.ceilCells = [];
-    const world = getWorld();
+    this.wallFaces = [];
+    this.plainFaces = [];
+    this.ceil = ceilingTextures(world.theme);
     this.meshes = worldMeshes(world);
+    this.meshTheme = this.meshes.map((m) => world.styleAt(Math.floor(m.cx), Math.floor(m.cy)));
     // Jam Rooms get the same soft gold floor as in the top-down view.
     const jamTiles = new Set<number>();
     for (const a of world.areas) {
@@ -107,9 +151,16 @@ export class Raycaster {
     }
     for (let y = 0; y < MAP_H; y++) {
       for (let x = 0; x < MAP_W; x++) {
-        const cell = bakedFloorCell(world, x, y, this.floors[baseFloor(x, y)]);
+        const cell = bakedFloorCell(world, x, y, floorCell(world, x, y));
         this.floorCells.push(jamTiles.has(y * MAP_W + x) ? jamTint(cell) : cell);
-        this.ceilCells.push(hash(x * 3, y * 5) < 0.18 ? this.ceil.light : this.ceil.plain);
+        const ceil = ceilingTextures(world.styleAt(x, y));
+        this.ceilCells.push(hash(x * 3, y * 5) < 0.18 ? ceil.light : ceil.plain);
+        if (isWall(world.grid[y][x])) {
+          for (const face of ['n', 'e', 's', 'w'] as const) {
+            this.wallFaces[(y * MAP_W + x) * 4 + FACE_INDEX[face]] = wallFaceTexture(world, x, y, face);
+            this.plainFaces[(y * MAP_W + x) * 4 + FACE_INDEX[face]] = plainWallFace(world, x, y, face);
+          }
+        }
       }
     }
   }
@@ -138,6 +189,10 @@ export class Raycaster {
     const dirX = Math.cos(me.a), dirY = Math.sin(me.a);
     const planeX = -dirY * PLANE, planeY = dirX * PLANE;
 
+    const light = this.lightAt(px, py);
+    const plain = isNeutral(light);
+    const lit = (c: number, f: number) => (plain ? shade(c, f) : shadeRGB(c, f, light));
+
     // Floor and ceiling, one horizontal span per row.
     const rdx0 = dirX - planeX, rdy0 = dirY - planeY;
     const rdx1 = dirX + planeX, rdy1 = dirY + planeY;
@@ -152,7 +207,7 @@ export class Raycaster {
         const t = ((fy - cy) * TEX) & (TEX - 1), s = ((fx - cx) * TEX) & (TEX - 1);
         const inside = cx >= 0 && cy >= 0 && cx < MAP_W && cy < MAP_H;
         const tex = inside ? cells[cy * MAP_W + cx] : fallback;
-        pix[row + x] = shade(tex.data[t * TEX + s], f);
+        pix[row + x] = lit(tex.data[t * TEX + s], f);
         fx += stepX;
         fy += stepY;
       }
@@ -199,15 +254,19 @@ export class Raycaster {
       if ((side === 0 && rdx > 0) || (side === 1 && rdy < 0)) tx = TEX - 1 - tx;
 
       // The wall's own picture covers its first tile of height; above that, up to the ceiling, it is plain wall.
-      const tex = this.walls[tile] ?? this.walls['#'];
-      const plain = this.walls['#'];
+      // The ray hit the west face of a tile when it was moving east, the north face when moving south, and so on.
+      const face = side === 0 ? (rdx > 0 ? 3 : 1) : rdy > 0 ? 0 : 2;
+      const onMap = mx >= 0 && my >= 0 && mx < MAP_W && my < MAP_H;
+      const cellAt = (my * MAP_W + mx) * 4 + face;
+      const tex = (onMap && this.wallFaces[cellAt]) || this.defaultWall;
+      const plain = (onMap && this.plainFaces[cellAt]) || this.defaultWall;
       const f = fog(dist) * (side === 1 ? 0.82 : 1);
       for (let y = y0; y < y1; y++) {
         const z = eye + (horizon - (y + 0.5)) / unit; // height on the wall at this pixel
         const t = z <= 1 ? tex : plain;
         const v = z <= 1 ? 1 - z : 1 - (z - 1 - Math.floor(z - 1));
         const ty = Math.min(TEX - 1, Math.max(0, (v * TEX) | 0));
-        pix[y * w + x] = shade(t.data[ty * TEX + tx], f);
+        pix[y * w + x] = lit(t.data[ty * TEX + tx], f);
         depth[y * w + x] = dist32;
       }
     }
@@ -215,14 +274,15 @@ export class Raycaster {
     // Furniture: solid boxes, drawn face by face into the same depth buffer as the walls.
     const cam = makeCam(px, py, me.a, PLANE);
     const target = { pix, depth, w, h };
-    for (const m of this.meshes) {
+    for (const [mi, m] of this.meshes.entries()) {
+      const mats = this.matsFor(this.meshTheme[mi] ?? 'warm-studio');
       const dx = m.cx - px, dy = m.cy - py;
       const range = m.minor ? MINOR_RANGE : FURNITURE_RANGE;
       if (dx * dx + dy * dy > range * range) continue;
       if (cam.invDet * (-cam.planeY * dx + cam.planeX * dy) < -2) continue; // well behind us
       for (const face of visibleFaces(m.faces, px, py, eye)) {
-        const tex = this.mats[face.mat] ?? viewTexture(face.mat, now) ?? (isStyleMat(face.mat) ? materialFor(face.mat) : null);
-        if (tex) fillFace(target, face, cam, K, horizon, tex, eye); // a custom sheet that is still loading has no texture yet
+        const tex = mats[face.mat] ?? viewTexture(face.mat, now) ?? (isStyleMat(face.mat) ? materialFor(face.mat) : null);
+        if (tex) fillFace(target, face, cam, K, horizon, tex, eye, light); // a custom sheet that is still loading has no texture yet
       }
     }
 
@@ -258,7 +318,7 @@ export class Raycaster {
           if (tY >= depth[y * w + x]) continue;
           const ty = Math.min(tex.h - 1, Math.floor(((y - top) * tex.h) / sh));
           const c = tex.data[ty * tex.w + tx];
-          if (c >>> 24 > 127) pix[y * w + x] = shade(c, f);
+          if (c >>> 24 > 127) pix[y * w + x] = lit(c, f);
         }
       }
       if (s.player) {

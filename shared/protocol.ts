@@ -1,4 +1,6 @@
+import type { DeskLook, DeskLookError } from './desk-look';
 import type { CustomObject } from './objects';
+import type { Season } from './season';
 
 /** The light index of a studio item: enough to list it; the full design comes from `GET /api/items`. */
 export interface ItemInfo {
@@ -180,6 +182,8 @@ export type ClientMsg =
   | { t: 'jamTrack'; id: string; len: number }
   /** This listener's player cannot play the current track. */
   | { t: 'jamFail'; id: string }
+  /** Set (or with null, reset) the look of the desk the sender holds. */
+  | { t: 'deskLook'; look: DeskLook | null }
   | ({ t: 'admin' } & AdminOp);
 
 export type ServerMsg =
@@ -195,6 +199,12 @@ export type ServerMsg =
       session?: string;
       /** The published layout revision to fetch from `GET /api/layout`. */
       layoutRev?: number;
+      /** The look of every claimed desk that has one, by desk id. */
+      deskLooks?: Record<string, DeskLook>;
+      /** The season, the server's local offset from UTC in minutes, and its clock in ms: for seasonal touches and time-of-day light. */
+      season?: Season;
+      tzOffsetMin?: number;
+      now?: number;
       /** Whether this connection may edit the office layout. */
       canBuild?: boolean;
       /** The custom furniture and objects builders have added. */
@@ -234,6 +244,12 @@ export type ServerMsg =
   /** Jam Room state, to the room's listeners only. `room: null` is sent once to someone who has just stopped being one. */
   | JamState
   | { t: 'jamNote'; text: string }
+  /** The look of every claimed desk that has one, by desk id: the full map, to everyone. */
+  | { t: 'deskLooks'; looks: Record<string, DeskLook> }
+  /** Why a `deskLook` was not saved; only to the sender. */
+  | { t: 'deskLookError'; code: DeskLookError; message: string }
+  /** The season changed (checked hourly). */
+  | { t: 'season'; season: Season }
   | { t: 'correct'; x: number; y: number; reason: 'full' | 'restricted' | 'locked' | 'arena'; areaId?: string; deskId?: string }
   | { t: 'teleport'; x: number; y: number; reason: 'ring' | 'desk' | 'layout' | 'arena'; a?: number; back?: true }
   /** A new layout was published: fetch `GET /api/layout?rev=<rev>`. */

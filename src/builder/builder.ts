@@ -10,9 +10,14 @@ import { NO_WALL, cloneLayout, rotFootprint, type Face, type Layout, type Placed
 import { checkLayout, type Problem } from '../../shared/layout-check';
 import { mergeLayouts, type Clash, type Side } from '../../shared/layout-merge';
 import { compileWorld, type World } from '../../shared/world';
-import type { MapView, Renderer2D } from '../render2d';
+import { buildMapCanvas, type MapView, type Renderer2D } from '../render2d';
+import type { DeskLook } from '../../shared/desk-look';
+import { session } from '../session';
 import { api, published } from '../world-client';
+import { TILE } from '../art';
 import { History } from './history';
+import { formatPaintKey } from '../../shared/finishes';
+import { STAMP_MESSAGES, kitById, stampKit } from '../../shared/room-kits';
 import { BuilderPanel, type HistoryRow, type PanelState, type RegionRef, type Tab, type ToolId } from './panel';
 import * as tools from './tools';
 
@@ -26,6 +31,12 @@ export interface BuilderHost {
   openStudio(seed?: { design: import('../studio/model').Design; itemId?: string }): void;
   /** Where the player stands (tiles); the camera starts there. */
   here(): { x: number; y: number };
+  /** Who decorated the desk space at this tile, when it has a look from the member who holds it. */
+  decoratedBy?(x: number, y: number): string | null;
+  /** The ids of the desks someone holds. */
+  claimedDesks?(): string[];
+  /** The desk looks of the members who hold desks, by desk id. */
+  looks?(): Record<string, DeskLook>;
   /** Build mode closed (by the person, or because building was switched off). */
   onClose(): void;
 }
@@ -62,7 +73,7 @@ export class Builder {
   private merge: { base: Layout | null; theirs: Layout; rev: number } | null = null;
   private tab: Tab = 'furniture';
   private tool: ToolId = 'select';
-  private brush = { floor: '.', wall: '#', kind: 'desk', prefab: 'pod-4' };
+  private brush: PanelState['brush'] = { floor: '.', wall: '#', kind: 'desk', prefab: 'pod-4', kit: 'lounge', floorFinish: null, wallFinish: null, color: null };
   private region: RegionRef | null = null;
   private regionMode: 'paint' | 'unpaint' = 'paint';
   private rot = 0;
@@ -81,6 +92,29 @@ export class Builder {
   private saveText = '';
   private behindText = '';
   private message = '';
+  /** The tiles of desks someone holds: a kit may not cover them. */
+  private claimedTiles(): Set<string> {
+    const out = new Set<string>();
+    const held = new Set(this.host.claimedDesks?.() ?? []);
+    for (const d of this.world.desks) if (held.has(d.id)) for (const t of d.tiles) out.add(`${t.x},${t.y}`);
+    return out;
+  }
+  /** The owners' looks drawn over the draft's desks, kept for as long as neither the draft nor the looks change. */
+  private looksPicture: { layout: Layout; key: string; canvas: HTMLCanvasElement; desks: { x: number; y: number }[][] } | null = null;
+  private ownerLooks() {
+    const held = new Set(this.host.claimedDesks?.() ?? []);
+    const looks: Record<string, DeskLook> = {};
+    for (const [id, look] of Object.entries(this.host.looks?.() ?? {})) if (held.has(id) && this.world.desks.some((d) => d.id === id)) looks[id] = look;
+    const key = JSON.stringify(looks);
+    if (Object.keys(looks).length === 0) return null;
+    if (this.looksPicture?.layout !== this.layout || this.looksPicture.key !== key) {
+      const world = compileWorld(this.layout, currentCatalog(), looks);
+      this.looksPicture = { layout: this.layout, key, canvas: buildMapCanvas(world), desks: world.desks.filter((d) => looks[d.id]).map((d) => d.tiles.map((t) => ({ x: t.x, y: t.y }))) };
+    }
+    return this.looksPicture;
+  }
+  /** The last "decorated by" line shown as the message, so it can be taken away again. */
+  private decorNote = '';
   private busy = false;
   private rows: HistoryRow[] | null = null;
   private uploadErrors: string[] = [];
@@ -138,11 +172,34 @@ export class Builder {
       },
       pickFloor: (c) => {
         this.brush.floor = c;
+        this.brush.floorFinish = null;
         this.setTool('floor');
       },
       pickWall: (c) => {
         this.brush.wall = c;
+        this.brush.wallFinish = null;
         this.setTool('wall');
+      },
+      pickFinish: (surface, id) => {
+        if (surface === 'floor') this.brush.floorFinish = id;
+        else this.brush.wallFinish = id;
+        this.setTool(surface);
+      },
+      setTheme: (id) => {
+        const { theme: _t, ...rest } = this.layout;
+        this.commit(id === 'warm-studio' ? rest : { ...rest, theme: id });
+      },
+      setSwitch: (which, on) => {
+        const { [which]: _w, ...rest } = this.layout;
+        this.commit(on ? { ...rest, [which]: true } : rest);
+      },
+      pickKit: (id) => {
+        this.brush.kit = id;
+        this.setTool('kit');
+      },
+      pickColor: (color) => {
+        this.brush.color = color;
+        this.emit();
       },
       openStudio: (k) => this.openStudio(k),
       pickItem: (k) => {
@@ -567,7 +624,15 @@ export class Builder {
     if (!t) return;
     const [x, y] = t;
     this.message = '';
-    if (this.tool === 'prefab') {
+    if (this.tool === 'kit') {
+      const kit = kitById(this.brush.kit);
+      if (!kit) return;
+      const r = stampKit(this.layout, kit, x - Math.floor(kit.w / 2), y - Math.floor(kit.h / 2), this.claimedTiles(), currentCatalog());
+      if ('layout' in r) {
+        this.commit(r.layout);
+        this.region = { kind: 'room', id: r.roomId };
+      } else this.tell(STAMP_MESSAGES[r.error]);
+    } else if (this.tool === 'prefab') {
       const p = prefabById(this.brush.prefab);
       if (!p) return;
       const r = tools.placePrefab(this.layout, p.id, x - Math.floor(p.size[0] / 2), y - Math.floor(p.size[1] / 2), currentCatalog());
@@ -623,6 +688,14 @@ export class Builder {
     const t = this.tileOf(e);
     this.hover = t;
     this.point = this.pointOf(e);
+    // A desk with a member's look shows the builder's own version here; say so, so a change that seems to do nothing makes sense.
+    const by = t ? this.host.decoratedBy?.(t[0], t[1]) : null;
+    const note = by ? `Decorated by ${by}: their look shows while they hold this desk.` : '';
+    if (note !== this.decorNote) {
+      if (this.message === this.decorNote) this.message = note;
+      this.decorNote = note;
+      this.emit();
+    }
     if (!t) return;
     if (this.stroke) this.paintAt(t);
     else if (this.drag?.attached) {
@@ -679,8 +752,15 @@ export class Builder {
     }
     this.lastTile = to;
     let next = this.layout;
-    if (this.tool === 'floor') next = tools.paintFloor(next, tiles, this.brush.floor);
-    else if (this.tool === 'wall') next = tools.paintWall(next, tiles, this.brush.wall, currentCatalog());
+    if (this.tool === 'floor' || this.tool === 'wall') {
+      const finish = this.tool === 'floor' ? this.brush.floorFinish : this.brush.wallFinish;
+      if (finish) {
+        const key = formatPaintKey(finish, this.brush.color ?? undefined);
+        const r = this.tool === 'floor' ? tools.paintFloorKey(next, tiles, key) : tools.paintWallKey(next, tiles, key, currentCatalog());
+        if (r.ok) next = r.layout;
+        else this.message = r.error;
+      } else next = this.tool === 'floor' ? tools.paintFloor(next, tiles, this.brush.floor) : tools.paintWall(next, tiles, this.brush.wall, currentCatalog());
+    }
     else if (this.tool === 'region' && this.region) {
       if (this.regionMode === 'paint') {
         const r = tools.paintRegion(next, this.region.kind, this.region.id, tiles);
@@ -696,7 +776,7 @@ export class Builder {
       this.message = `${this.strokeGone} ${this.strokeGone === 1 ? 'item' : 'items'} went with ${this.strokeGone === 1 ? 'its' : 'their'} desk or wall`;
     }
     if (JSON.stringify(next.rooms) !== JSON.stringify(this.layout.rooms) || JSON.stringify(next.pods) !== JSON.stringify(this.layout.pods)) this.setLayout(next, false);
-    else if (next.floor !== this.layout.floor || next.walls !== this.layout.walls || next.objects.length !== this.layout.objects.length) {
+    else if (next.floor !== this.layout.floor || next.walls !== this.layout.walls || next.floorPaint !== this.layout.floorPaint || next.wallPaint !== this.layout.wallPaint || next.objects.length !== this.layout.objects.length) {
       this.setLayout(next, false);
     }
   }
@@ -769,7 +849,11 @@ export class Builder {
       tab: this.tab,
       tool: this.tool,
       brush: this.brush,
-      rooms: this.layout.rooms.map((r) => ({ id: r.id, name: r.name, private: r.private, restricted: r.restricted, ...(r.jam ? { jam: true } : {}), ...(r.capacity === undefined ? {} : { capacity: r.capacity }) })),
+      officeTheme: this.layout.theme ?? 'warm-studio',
+      seasonal: this.layout.seasonal === true,
+      daylight: this.layout.daylight === true,
+      season: session.season,
+      rooms: this.layout.rooms.map((r) => ({ id: r.id, name: r.name, private: r.private, restricted: r.restricted, ...(r.jam ? { jam: true } : {}), ...(r.style ? { style: r.style.theme } : {}), ...(r.capacity === undefined ? {} : { capacity: r.capacity }) })),
       pods: this.layout.pods.map((p) => ({ id: p.id, name: p.name, mode: p.mode })),
       region: this.region,
       customs: [...customObjects()],
@@ -809,6 +893,16 @@ export class Builder {
       ctx.lineTo(ox + w * s, oy + y * s + 0.5);
     }
     ctx.stroke();
+
+    // The look of a desk's owner, dimmed over the builder's own version of the desk space (which is what gets published).
+    const owned = this.ownerLooks();
+    if (owned) {
+      ctx.save();
+      ctx.globalAlpha = 0.4;
+      ctx.imageSmoothingEnabled = false;
+      for (const tiles of owned.desks) for (const t of tiles) ctx.drawImage(owned.canvas, t.x * TILE, t.y * TILE, TILE, TILE, ox + t.x * s, oy + t.y * s, s, s);
+      ctx.restore();
+    }
 
     const fillTiles = (tiles: readonly (readonly [number, number])[], fill: string, stroke?: string) => {
       ctx.fillStyle = fill;
@@ -948,6 +1042,20 @@ export class Builder {
         const tiles: tools.Tile[] = [];
         for (let ty = y; ty < y + fd; ty++) for (let tx = x; tx < x + fw; tx++) tiles.push([tx, ty]);
         outline(tiles, bad ? 'rgba(255, 110, 120, 1)' : 'rgba(120, 230, 150, 1)', bad ? 'rgba(224, 60, 80, 0.3)' : 'rgba(80, 200, 120, 0.3)');
+      }
+    } else if (this.tool === 'kit' && this.hover) {
+      const kit = kitById(this.brush.kit);
+      if (kit) {
+        const x = this.hover[0] - Math.floor(kit.w / 2), y = this.hover[1] - Math.floor(kit.h / 2);
+        const bad = stampKit(this.layout, kit, x, y, this.claimedTiles(), currentCatalog());
+        const tiles: tools.Tile[] = [];
+        for (let ty = y; ty < y + kit.h; ty++) for (let tx = x; tx < x + kit.w; tx++) tiles.push([tx, ty]);
+        outline(tiles, 'layout' in bad ? 'rgba(120, 230, 150, 1)' : 'rgba(255, 110, 120, 1)', 'layout' in bad ? 'rgba(80, 200, 120, 0.25)' : 'rgba(224, 60, 80, 0.25)');
+        if (!('layout' in bad)) {
+          ctx.fillStyle = '#fff';
+          ctx.font = '700 13px sans-serif';
+          ctx.fillText(STAMP_MESSAGES[bad.error], ox + x * s + 4, oy + y * s - 6);
+        }
       }
     } else if (this.tool === 'prefab' && this.hover) {
       const p = prefabById(this.brush.prefab);

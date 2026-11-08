@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DESKS, areaById, deskById, podById, type PodMode } from '../shared/map';
 import { MAX_MEMBER_ID, isUuid } from '../shared/member';
+import { clampDeskLook, type StoredDeskLook } from '../shared/desk-look';
 import type { AvatarChoice } from '../shared/protocol';
 
 export interface DeskClaim {
@@ -36,6 +37,8 @@ export interface StoredState {
   characters: Record<string, StoredCharacter>;
   /** Whether Office Arena can be started. Absent means yes; an additive field, so the version is unchanged. */
   arenaEnabled?: boolean;
+  /** Each member's desk look, kept with the member (not the desk), so it comes back with their next desk. An additive field. */
+  deskLooks?: Record<string, StoredDeskLook>;
 }
 
 export interface StoredCharacter {
@@ -45,6 +48,8 @@ export interface StoredCharacter {
 }
 
 export const MAX_CHARACTERS = 2000;
+/** Most saved desk looks; the oldest are dropped past it. */
+export const MAX_DESK_LOOKS = 2000;
 
 const FILE = 'office-state.json';
 /** The state file version this server writes. A feature that changes the file's shape bumps it and teaches parseState the old one. */
@@ -68,6 +73,18 @@ function readCharacters(raw: unknown): Record<string, StoredCharacter> {
   }
   list.sort((a, b) => b[1].at - a[1].at);
   return Object.fromEntries(list.slice(0, MAX_CHARACTERS));
+}
+
+/** Saved desk looks worth keeping: real members only, each a well-formed look, the newest MAX_DESK_LOOKS. */
+function readDeskLooks(raw: unknown): Record<string, StoredDeskLook> {
+  const list: [string, StoredDeskLook][] = [];
+  for (const [id, v] of Object.entries((raw ?? {}) as Record<string, Partial<StoredDeskLook> | null>)) {
+    if (!realMember(id) || typeof v !== 'object' || v === null) continue;
+    const look = clampDeskLook(v.look);
+    if (look) list.push([id, { look, at: typeof v.at === 'number' ? v.at : 0 }]);
+  }
+  list.sort((a, b) => b[1].at - a[1].at);
+  return Object.fromEntries(list.slice(0, MAX_DESK_LOOKS));
 }
 
 /** Notices worth keeping: real members, each kind once per member, at most MAX_NOTICE. */
@@ -169,6 +186,10 @@ export function parseState(raw: unknown): StoredState {
   out.helperEnabled = current && r.helperEnabled === true;
   if (version === 4) out.characters = readCharacters(r.characters);
   if (current && r.arenaEnabled === false) out.arenaEnabled = false;
+  if (version === 4) {
+    const looks = readDeskLooks(r.deskLooks);
+    if (Object.keys(looks).length) out.deskLooks = looks;
+  }
   return out;
 }
 

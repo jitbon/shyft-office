@@ -1,5 +1,7 @@
 // The office layout as data: what a builder edits and what the server saves. Pure types and functions, so the
 // server, the browser and the tests all read and check a layout the same way.
+import { MAX_PAINTS, UNPAINTED, paintChar, paintIndex, parsePaintKey } from './finishes';
+import { isThemeId } from './themes';
 
 /** Inclusive tile rectangle: [x0, y0, x1, y1]. */
 export type Rect = [number, number, number, number];
@@ -41,6 +43,8 @@ export interface Room {
   highlight: boolean;
   /** A Jam Room plays shared music for everyone inside. Absent means an ordinary room. */
   jam?: boolean;
+  /** Inside this room the floor, ceiling, wall faces and light follow this theme instead of the office's. */
+  style?: { theme: string };
 }
 
 export type PodMode = 'ambient' | 'cubicle';
@@ -64,6 +68,18 @@ export interface Layout {
   pods: Pod[];
   /** A tile. */
   spawn: { x: number; y: number };
+  /** How the whole office looks; absent means Warm Studio. */
+  theme?: string;
+  /** The paint keys in use (at most `MAX_PAINTS`); `floorPaint` and `wallPaint` index into them. */
+  paints?: string[];
+  /** One character per tile: `' '` for no paint, else `paintChar(index into paints)`. Looks only; `floor` still decides everything else. */
+  floorPaint?: string;
+  /** The same for plain `#` walls. */
+  wallPaint?: string;
+  /** Seasonal touches (off when absent). */
+  seasonal?: boolean;
+  /** Time-of-day light in first person (off when absent). */
+  daylight?: boolean;
 }
 
 export const MIN_SIZE = 10;
@@ -122,6 +138,8 @@ export function parseLayout(
   footprintOf: (kind: string) => readonly [number, number] | undefined,
   /** Where an item goes (`floor`, `deskitem`, `wall`, `floorart`); anything unknown counts as `floor`. */
   placementOf: (kind: string) => string | undefined = () => undefined,
+  /** `lenient` is for the server's own saved file: a finish or theme that no longer exists is dropped instead of refusing the layout. */
+  opts: { lenient?: boolean } = {},
 ): ParseResult {
   const errors: string[] = [];
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { ok: false, errors: ['not-an-object'] };
@@ -219,6 +237,7 @@ export function parseLayout(
         allowed,
         highlight: typeof o.highlight === 'boolean' ? o.highlight : o.private === true,
         ...(o.jam === true ? { jam: true } : {}),
+        ...roomStyle(o.style, errors, opts.lenient === true),
       });
     }
   }
@@ -242,11 +261,128 @@ export function parseLayout(
   const sp = r.spawn as { x?: unknown; y?: unknown } | undefined;
   if (!sp || !isInt(sp.x) || !isInt(sp.y) || !inside(sp.x, sp.y)) errors.push('bad-spawn: spawn must be a tile inside the grid');
 
+  const look = parseLook(r, cells, errors, opts.lenient === true);
+
   if (errors.length) return { ok: false, errors };
   return {
     ok: true,
-    layout: { w, h, floor: floor as string, walls: walls as string, objects, rooms, pods, spawn: { x: sp!.x as number, y: sp!.y as number } },
+    layout: { w, h, floor: floor as string, walls: walls as string, objects, rooms, pods, spawn: { x: sp!.x as number, y: sp!.y as number }, ...look },
   };
+}
+
+/** A room's own theme: kept when it is a known one; refused (`bad-theme`) otherwise, or quietly dropped when reading the saved file. */
+function roomStyle(raw: unknown, errors: string[], lenient: boolean): { style?: { theme: string } } {
+  if (raw === undefined || raw === null) return {};
+  const theme = (raw as { theme?: unknown }).theme;
+  if (isThemeId(theme)) return { style: { theme } };
+  if (!lenient) errors.push('bad-theme: a room style must name a known theme');
+  return {};
+}
+
+/** The look fields: theme, paint table and grids, and the two switches. Nothing here changes what is solid or where anything stands. */
+function parseLook(r: Record<string, unknown>, cells: number, errors: string[], lenient: boolean): Pick<Layout, 'theme' | 'paints' | 'floorPaint' | 'wallPaint' | 'seasonal' | 'daylight'> {
+  const out: Pick<Layout, 'theme' | 'paints' | 'floorPaint' | 'wallPaint' | 'seasonal' | 'daylight'> = {};
+
+  if (r.theme !== undefined) {
+    if (isThemeId(r.theme)) out.theme = r.theme;
+    else if (lenient) out.theme = 'warm-studio';
+    else errors.push('bad-theme: unknown theme');
+  }
+  for (const flag of ['seasonal', 'daylight'] as const) {
+    if (r[flag] === undefined) continue;
+    if (typeof r[flag] === 'boolean') out[flag] = r[flag] as boolean;
+    else if (!lenient) errors.push(`bad-flag: ${flag} must be true or false`);
+  }
+
+  if (r.paints === undefined && r.floorPaint === undefined && r.wallPaint === undefined) return out;
+  if (!Array.isArray(r.paints)) {
+    if (!lenient) errors.push('bad-paint: paints must be a list');
+    return out;
+  }
+  if (r.paints.length > MAX_PAINTS) {
+    errors.push(`too-many-paints: at most ${MAX_PAINTS}`);
+    return out;
+  }
+  const paints = r.paints as unknown[];
+  // Entries nobody can draw (when reading the saved file) are remembered so their tiles can be cleared.
+  const dead = new Set<number>();
+  const seen = new Set<string>();
+  paints.forEach((key, i) => {
+    if (typeof key === 'string' && parsePaintKey(key) && !seen.has(key)) {
+      seen.add(key);
+      return;
+    }
+    dead.add(i);
+    if (!lenient) errors.push(`bad-paint: ${typeof key === 'string' ? key.slice(0, 40) : 'not a text key'}`);
+  });
+
+  const grid = (value: unknown, surface: 'floor' | 'wall'): string | undefined => {
+    if (value === undefined) return undefined;
+    if (typeof value !== 'string' || value.length !== cells) {
+      if (!lenient) errors.push(`bad-paint-grid: ${surface}Paint must have one character per tile`);
+      return undefined;
+    }
+    let outGrid = '';
+    let reported = false;
+    for (const ch of value) {
+      if (ch === UNPAINTED) {
+        outGrid += ch;
+        continue;
+      }
+      const i = paintIndex(ch);
+      const finish = i >= 0 && i < paints.length && !dead.has(i) ? parsePaintKey(paints[i])?.finish : undefined;
+      if (i < 0 || i >= paints.length) {
+        if (!lenient && !reported) errors.push('bad-paint-grid: a character does not name a paint');
+        reported = true;
+        outGrid += UNPAINTED;
+      } else if (!finish) outGrid += UNPAINTED;
+      else if (finish.surface !== surface) {
+        if (!lenient && !reported) errors.push(`bad-paint: a ${finish.surface} finish is painted on a ${surface}`);
+        reported = true;
+        outGrid += UNPAINTED;
+      } else outGrid += ch;
+    }
+    return outGrid;
+  };
+  const floorPaint = grid(r.floorPaint, 'floor');
+  const wallPaint = grid(r.wallPaint, 'wall');
+  out.paints = paints.map((k, i) => (dead.has(i) ? '' : (k as string)));
+  if (floorPaint !== undefined) out.floorPaint = floorPaint;
+  if (wallPaint !== undefined) out.wallPaint = wallPaint;
+  // A dead entry keeps its slot (an empty key) so the other characters still point at the right paints; compaction removes it.
+  return out;
+}
+
+/**
+ * Drops paints nothing uses and numbers the rest again in their old order. A wall paint only counts on a plain `#` wall, and is cleared
+ * everywhere else. When nothing is painted, the fields go away so an unpainted layout looks exactly like an old one.
+ */
+export function compactPaints(layout: Layout): Layout {
+  const l = layout;
+  if (!l.paints && !l.floorPaint && !l.wallPaint) return l;
+  const paints = l.paints ?? [];
+  let floorPaint = l.floorPaint, wallPaint = l.wallPaint;
+  if (wallPaint) {
+    const cells = [...wallPaint];
+    for (let i = 0; i < cells.length; i++) if (l.walls[i] !== '#') cells[i] = UNPAINTED;
+    wallPaint = cells.join('');
+  }
+  const used = new Set<number>();
+  for (const g of [floorPaint, wallPaint]) if (g) for (const ch of g) if (ch !== UNPAINTED) used.add(paintIndex(ch));
+  const order = [...used].filter((i) => i >= 0 && i < paints.length && paints[i]).sort((a, b) => a - b);
+  const renumber = new Map(order.map((old, n) => [old, n]));
+  const remap = (g: string | undefined) =>
+    g === undefined ? undefined : [...g].map((ch) => (ch === UNPAINTED ? ch : renumber.has(paintIndex(ch)) ? paintChar(renumber.get(paintIndex(ch))!) : UNPAINTED)).join('');
+  floorPaint = remap(floorPaint);
+  wallPaint = remap(wallPaint);
+  const { paints: _p, floorPaint: _f, wallPaint: _w, ...rest } = l;
+  const next: Layout = { ...rest };
+  if (order.length) {
+    next.paints = order.map((i) => paints[i]);
+    if (floorPaint && /[^ ]/.test(floorPaint)) next.floorPaint = floorPaint;
+    if (wallPaint && /[^ ]/.test(wallPaint)) next.wallPaint = wallPaint;
+  }
+  return next;
 }
 
 /** A deep copy that is safe to edit. */
@@ -254,9 +390,10 @@ export function cloneLayout(l: Layout): Layout {
   return {
     ...l,
     objects: l.objects.map((o) => ({ ...o, ...(o.at ? { at: [...o.at] as [number, number] } : {}) })),
-    rooms: l.rooms.map((r) => ({ ...r, rects: r.rects.map((q) => [...q] as Rect), allowed: [...r.allowed] })),
+    rooms: l.rooms.map((r) => ({ ...r, rects: r.rects.map((q) => [...q] as Rect), allowed: [...r.allowed], ...(r.style ? { style: { ...r.style } } : {}) })),
     pods: l.pods.map((p) => ({ ...p, rects: p.rects.map((q) => [...q] as Rect) })),
     spawn: { ...l.spawn },
+    ...(l.paints ? { paints: [...l.paints] } : {}),
   };
 }
 
@@ -362,5 +499,5 @@ export function normalizeLayout(
     kept.push(o);
   }
   l.objects = kept;
-  return { layout: l, removed };
+  return { layout: compactPaints(l), removed };
 }

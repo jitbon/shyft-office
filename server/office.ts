@@ -1,6 +1,7 @@
 import {
   AREAS, DESKS, DESK_PODS, areaAt, areaById, deskAt, deskById, podById, type PodMode,
 } from '../shared/map';
+import { isEmptyLook, type DeskLook, type StoredDeskLook } from '../shared/desk-look';
 import type { AvatarChoice, OfficeSnapshot, PlayerStatus } from '../shared/protocol';
 import type { OfficeInput } from '../shared/proximity';
 import { saveCharacter } from './characters';
@@ -55,6 +56,8 @@ export class OfficeState {
   helperEnabled = false;
   /** Saved characters by member id. Saved. */
   characters: Record<string, StoredCharacter> = {};
+  /** Each member's desk look, kept with the member so it comes back with their next desk. Saved. */
+  private deskLooks = new Map<string, StoredDeskLook>();
   /** Whether Office Arena can be started. Saved. */
   arenaEnabled = true;
   /** Whether a player is in an Office Arena match: they stay out of meeting rooms and other people's desks. */
@@ -77,6 +80,7 @@ export class OfficeState {
     this.helperEnabled = state.helperEnabled;
     this.arenaEnabled = state.arenaEnabled !== false;
     this.characters = { ...state.characters };
+    for (const [memberId, v] of Object.entries(state.deskLooks ?? {})) this.deskLooks.set(memberId, v);
     this.onChange = opts.onChange ?? (() => {});
   }
 
@@ -126,6 +130,7 @@ export class OfficeState {
       helperEnabled: this.helperEnabled,
       characters: this.characters,
       ...(this.arenaEnabled ? {} : { arenaEnabled: false }),
+      ...(this.deskLooks.size ? { deskLooks: Object.fromEntries(this.deskLooks) } : {}),
     };
   }
 
@@ -177,6 +182,28 @@ export class OfficeState {
   }
 
   // ------------------------------------------------------------------ desks
+
+  /** Saves a member's desk look, or forgets it with null. */
+  setDeskLook(memberId: string, look: DeskLook | null) {
+    if (memberId.startsWith('eph-')) return;
+    if (look && !isEmptyLook(look)) this.deskLooks.set(memberId, { look, at: Date.now() });
+    else this.deskLooks.delete(memberId);
+    this.onChange();
+  }
+
+  deskLookOf(memberId: string): DeskLook | undefined {
+    return this.deskLooks.get(memberId)?.look;
+  }
+
+  /** The look to show at each claimed desk that has one, by desk id. */
+  looksByDesk(): Record<string, DeskLook> {
+    const out: Record<string, DeskLook> = {};
+    for (const [deskId, c] of this.claims) {
+      const look = this.deskLooks.get(c.memberId)?.look;
+      if (look) out[deskId] = look;
+    }
+    return out;
+  }
 
   /** The desk a member holds, if any. */
   deskOf(memberId: string): string | undefined {

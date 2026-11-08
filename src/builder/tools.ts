@@ -3,9 +3,11 @@
 import { currentCatalog, prefabById, type Catalog } from '../../shared/catalog';
 import {
   FACE_STEP, MAX_ON_DESK_TILE, MAX_ON_WALL_FACE, MAX_PODS, MAX_ROOMS, MAX_SIZE, MIN_SIZE, NAME_MAX, NO_WALL, cloneLayout,
-  deskTileOf, normalizeLayout, rotFootprint, unturnPoint,
+  compactPaints, deskTileOf, normalizeLayout, rotFootprint, unturnPoint,
   type Face, type Layout, type PlacedObject, type Pod, type Rect, type Room, type Rot,
 } from '../../shared/layout';
+import { MAX_PAINTS, UNPAINTED, paintChar } from '../../shared/finishes';
+import { isThemeId } from '../../shared/themes';
 import { compileWorld } from '../../shared/world';
 
 export type Edit = { ok: true; layout: Layout } | { ok: false; error: string };
@@ -72,8 +74,70 @@ export function whyNotFit(l: Layout, kind: string, x: number, y: number, rot: nu
 export function paintFloor(l: Layout, tiles: Tile[], code: string): Layout {
   const c = cloneLayout(l);
   for (const [x, y] of tiles) if (inside(c, x, y)) c.floor = setCell(c.floor, y * c.w + x, code);
+  // A plain floor code means "the theme's floor", so it replaces any finish painted there.
+  return compactPaints(setPaintCells(c, 'floor', tiles, null) ?? c);
+}
+
+export const TABLE_FULL = 'This office uses the most finishes it can. Reuse one already in the office.';
+
+/**
+ * Writes `key` (or nothing, for null) into the paint grid of one surface for these tiles. Returns null when `key` is new and the
+ * table already holds the most paints. The grid and table are created when needed and tidied again by `normalizeLayout`.
+ */
+function setPaintCells(c: Layout, surface: 'floor' | 'wall', tiles: Tile[], key: string | null): Layout | null {
+  const field = surface === 'floor' ? 'floorPaint' : 'wallPaint';
+  if (key === null && !c[field]) return c;
+  let ch = UNPAINTED;
+  if (key !== null) {
+    const paints = (c.paints ??= []);
+    let i = paints.indexOf(key);
+    if (i < 0) {
+      if (paints.length >= MAX_PAINTS) return null;
+      i = paints.push(key) - 1;
+    }
+    ch = paintChar(i);
+  }
+  const cells = (c[field] ?? UNPAINTED.repeat(c.w * c.h)).split('');
+  for (const [x, y] of tiles) if (inside(c, x, y)) cells[y * c.w + x] = ch;
+  c[field] = cells.join('');
   return c;
 }
+
+/** Paints floor tiles with a finish (a paint key from shared/finishes.ts). Fails when the office already uses the most finishes. */
+export function paintFloorKey(l: Layout, tiles: Tile[], key: string): Edit {
+  const c = setPaintCells(cloneLayout(l), 'floor', tiles, key);
+  return c ? { ok: true, layout: normalizeLayoutPaints(c) } : fail(TABLE_FULL);
+}
+
+/**
+ * Paints plain walls with a finish. An empty tile gets a plain `#` wall; a plain wall is repainted; windows, boards, shelves and
+ * counters keep their own art and are left alone. Tiles with furniture, and the spawn tile, are skipped as for any wall.
+ */
+export function paintWallKey(l: Layout, tiles: Tile[], key: string, catalog: Catalog = currentCatalog()): Edit {
+  let c = cloneLayout(l);
+  const todo: Tile[] = [];
+  for (const [x, y] of tiles) {
+    if (!inside(c, x, y)) continue;
+    const here = c.walls[y * c.w + x];
+    if (here === NO_WALL) {
+      if ((x === c.spawn.x && y === c.spawn.y) || objectAt(c, x, y, catalog)) continue;
+      c.walls = setCell(c.walls, y * c.w + x, '#');
+    } else if (here !== '#') continue;
+    todo.push([x, y]);
+  }
+  const done = setPaintCells(c, 'wall', todo, key);
+  if (!done) return fail(TABLE_FULL);
+  c = done;
+  return { ok: true, layout: tidy(normalizeLayoutPaints(c), catalog) };
+}
+
+/** Takes the finish off these tiles, back to the theme's own. */
+export function unpaint(l: Layout, tiles: Tile[], surface: 'floor' | 'wall'): Layout {
+  const c = setPaintCells(cloneLayout(l), surface, tiles, null) ?? l;
+  return normalizeLayoutPaints(c);
+}
+
+const normalizeLayoutPaints = (c: Layout): Layout => compactPaints(c);
 
 /** Paints walls, or clears them with a space. Tiles with furniture on them, and the spawn tile, are left alone. */
 export function paintWall(l: Layout, tiles: Tile[], code: string, catalog: Catalog = currentCatalog()): Layout {
@@ -81,6 +145,7 @@ export function paintWall(l: Layout, tiles: Tile[], code: string, catalog: Catal
   for (const [x, y] of tiles) {
     if (!inside(c, x, y) || (code !== NO_WALL && ((x === c.spawn.x && y === c.spawn.y) || objectAt(c, x, y, catalog)))) continue;
     c.walls = setCell(c.walls, y * c.w + x, code);
+    if (code === '#') setPaintCells(c, 'wall', [[x, y]], null); // a plain wall from the old tool has no finish
   }
   return tidy(c, catalog); // painting a wall away takes the decor on it too
 }
@@ -112,7 +177,12 @@ export function erase(l: Layout, tiles: Tile[], catalog: Catalog = currentCatalo
       continue;
     }
     const art = [...world.floorArt].reverse().find((a) => x >= a.x && y >= a.y && x < a.x + a.w && y < a.y + a.d);
-    if (art) c = deleteObject(c, art.obj.id, catalog);
+    if (art) {
+      c = deleteObject(c, art.obj.id, catalog);
+      continue;
+    }
+    // Nothing else is here: take the painted finish off the floor.
+    if (c.floorPaint && c.floorPaint[y * c.w + x] !== UNPAINTED) c = unpaint(c, [[x, y]], 'floor');
   }
   return c;
 }
@@ -329,14 +399,18 @@ export function resize(l: Layout, w: number, h: number, catalog: Catalog = curre
   w = Math.min(MAX_SIZE, Math.max(MIN_SIZE, Math.round(w)));
   h = Math.min(MAX_SIZE, Math.max(MIN_SIZE, Math.round(h)));
   const cut: string[] = [];
-  let floor = '', walls = '';
+  let floor = '', walls = '', floorPaint = '', wallPaint = '';
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       floor += inside(l, x, y) ? l.floor[y * l.w + x] : '.';
       walls += inside(l, x, y) ? l.walls[y * l.w + x] : NO_WALL;
+      floorPaint += inside(l, x, y) ? (l.floorPaint?.[y * l.w + x] ?? UNPAINTED) : UNPAINTED;
+      wallPaint += inside(l, x, y) ? (l.wallPaint?.[y * l.w + x] ?? UNPAINTED) : UNPAINTED;
     }
   }
   const c: Layout = { ...cloneLayout(l), w, h, floor, walls };
+  if (l.floorPaint) c.floorPaint = floorPaint;
+  if (l.wallPaint) c.wallPaint = wallPaint;
   c.objects = c.objects.filter((o) => {
     const kind = catalog.get(o.kind)?.kind;
     const tiles = kind === 'floorart' ? artTiles(o, catalog) : kind === 'wall' ? [[o.x, o.y] as Tile] : coverOf(o, catalog);
@@ -359,7 +433,7 @@ export function resize(l: Layout, w: number, h: number, catalog: Catalog = curre
     c.spawn = { x: Math.min(c.spawn.x, w - 1), y: Math.min(c.spawn.y, h - 1) };
     cut.push('the spawn point');
   }
-  return { layout: c, cut };
+  return { layout: compactPaints(c), cut };
 }
 
 // ------------------------------------------------------------ rooms and pods
@@ -478,7 +552,7 @@ export function deleteRegion(l: Layout, kind: RegionKind, id: string): Layout {
   return c;
 }
 
-export interface RoomPatch { name?: string; private?: boolean; capacity?: number | null; restricted?: boolean; jam?: boolean }
+export interface RoomPatch { name?: string; private?: boolean; capacity?: number | null; restricted?: boolean; jam?: boolean; /** A theme id, or null to follow the office theme. */ style?: string | null }
 
 export function updateRoom(l: Layout, id: string, patch: RoomPatch): Edit {
   const c = cloneLayout(l);
@@ -493,6 +567,11 @@ export function updateRoom(l: Layout, id: string, patch: RoomPatch): Edit {
   if (patch.jam !== undefined) {
     if (patch.jam) r.jam = true;
     else delete r.jam;
+  }
+  if (patch.style !== undefined) {
+    if (patch.style === null) delete r.style;
+    else if (isThemeId(patch.style)) r.style = { theme: patch.style };
+    else return fail('That theme does not exist.');
   }
   if (patch.capacity !== undefined) {
     if (patch.capacity === null || !Number.isFinite(patch.capacity)) delete r.capacity;

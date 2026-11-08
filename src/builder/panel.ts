@@ -9,9 +9,15 @@ import { viewCanvas } from '../custom-objects';
 import type { Clash, Side } from '../../shared/layout-merge';
 import type { Problem } from '../../shared/layout-check';
 import { TILE, drawFloor, drawFurniture2D, drawWall2D, makeCanvas } from '../art';
+import { FLOOR_FINISHES, FLOOR_GROUPS, GROUP_NAMES, SWATCHES, WALL_FINISHES, WALL_GROUPS, formatPaintKey, type Finish } from '../../shared/finishes';
+import { colorOf, finishPixels } from '../finish';
+import { THEMES, themeById } from '../../shared/themes';
+import { renderKits } from './kits';
+import { renderThemes, themePreview } from './themes';
 
-export type Tab = 'floors' | 'walls' | 'furniture' | 'rooms' | 'custom' | 'history';
-export type ToolId = 'select' | 'floor' | 'wall' | 'place' | 'erase' | 'spawn' | 'region' | 'prefab';
+export type Tab = 'floors' | 'walls' | 'themes' | 'furniture' | 'rooms' | 'kits' | 'custom' | 'history';
+export { formatPaintKey };
+export type ToolId = 'select' | 'floor' | 'wall' | 'place' | 'erase' | 'spawn' | 'region' | 'prefab' | 'kit';
 export type RegionRef = { kind: 'room' | 'pod'; id: string };
 
 export interface HistoryRow {
@@ -24,8 +30,15 @@ export interface HistoryRow {
 export interface PanelState {
   tab: Tab;
   tool: ToolId;
-  brush: { floor: string; wall: string; kind: string; prefab: string };
-  rooms: { id: string; name: string; private: boolean; restricted: boolean; jam?: boolean; capacity?: number }[];
+  /** `floorFinish` / `wallFinish` is a painted finish (with `color`, a swatch's `rrggbb`, or null for the theme's); null means the plain code in `floor` / `wall`. */
+  brush: { floor: string; wall: string; kind: string; prefab: string; kit: string; floorFinish: string | null; wallFinish: string | null; color: string | null };
+  /** The office's theme id, so finish previews show the colors they will really have. */
+  officeTheme: string;
+  seasonal: boolean;
+  daylight: boolean;
+  /** The season on the server, in words. */
+  season: string;
+  rooms: { id: string; name: string; private: boolean; restricted: boolean; jam?: boolean; capacity?: number; style?: string }[];
   pods: { id: string; name: string; mode: 'ambient' | 'cubicle' }[];
   region: RegionRef | null;
   customs: CustomObject[];
@@ -57,7 +70,7 @@ export interface PanelApi {
   newRegion(kind: 'room' | 'pod', isPrivate?: boolean): void;
   selectRegion(ref: RegionRef | null): void;
   regionMode(mode: 'paint' | 'unpaint'): void;
-  patchRoom(patch: { name?: string; private?: boolean; capacity?: number | null; restricted?: boolean; jam?: boolean }): void;
+  patchRoom(patch: { name?: string; private?: boolean; capacity?: number | null; restricted?: boolean; jam?: boolean; style?: string | null }): void;
   patchPod(patch: { name?: string; mode?: 'ambient' | 'cubicle' }): void;
   deleteRegion(): void;
   upload(file: File, meta: unknown): void;
@@ -65,6 +78,12 @@ export interface PanelApi {
   setTool(tool: ToolId): void;
   pickFloor(code: string): void;
   pickWall(code: string): void;
+  /** Paints with a finish; `color` is a swatch's `rrggbb`, or null for the theme's own color. */
+  pickFinish(surface: 'floor' | 'wall', id: string): void;
+  pickColor(color: string | null): void;
+  setTheme(id: string): void;
+  pickKit(id: string): void;
+  setSwitch(which: 'seasonal' | 'daylight', on: boolean): void;
   pickItem(kind: string): void;
   /** Opens the studio: with no argument on a new design, with a catalog id on that item (as a copy unless it is the member's own). */
   openStudio(kind?: string): void;
@@ -79,6 +98,20 @@ export interface PanelApi {
   discard(): void;
   exit(): void;
   restore(rev: number): void;
+}
+
+/** What a clash is about, in words. */
+export function clashLabel(key: string): string {
+  const [kind, id = ''] = key.split(/:(.*)/);
+  switch (kind) {
+    case 'paint-floor': return `Floor finish at ${id}`;
+    case 'paint-wall': return `Wall finish at ${id}`;
+    case 'theme': return 'Office theme';
+    case 'seasonal': return 'Seasonal touches';
+    case 'daylight': return 'Time-of-day light';
+    case 'obj': return id;
+    default: return key.replace(':', ' ');
+  }
 }
 
 const FLOOR_NAMES: Record<string, string> = { '.': 'Wood', ',': 'Carpet', ';': 'Library carpet', _: 'Kitchen tile' };
@@ -166,6 +199,8 @@ export class BuilderPanel {
   private file: File | null = null;
   /** The Items tab's filters, kept while the panel is redrawn. */
   private filter: { group: Group | ''; season: Season | ''; text: string } = { group: '', season: '', text: '' };
+  /** The finish search text, kept while the panel is redrawn. */
+  private finishText = '';
 
   constructor(private root: HTMLElement, private api: PanelApi) {}
 
@@ -215,6 +250,87 @@ export class BuilderPanel {
     draw();
   }
 
+  /** The Floors and Walls tabs: a search box, a color row, and the finishes in groups with small previews. */
+  private renderFinishes(root: HTMLElement, s: PanelState, surface: 'floor' | 'wall') {
+    const a = this.api;
+    const theme = themeById(s.officeTheme);
+    const finishes: Finish[] = surface === 'floor' ? FLOOR_FINISHES : WALL_FINISHES;
+    const groups: string[] = surface === 'floor' ? FLOOR_GROUPS : WALL_GROUPS;
+    const current = surface === 'floor' ? s.brush.floorFinish : s.brush.wallFinish;
+    const tool = surface === 'floor' ? 'floor' : 'wall';
+
+    const search = Object.assign(document.createElement('input'), { type: 'search', placeholder: 'Search finishes', value: this.finishText });
+    search.setAttribute('aria-label', 'Search finishes');
+    const colors = document.createElement('div');
+    colors.className = 'colors';
+    const colorBtn = (label: string, hex: string | null, bg: string | null) => {
+      const on = s.brush.color === hex;
+      const b = button(bg ? '' : label, () => a.pickColor(hex), { className: 'swatchbtn' + (on ? ' on' : ''), title: label });
+      b.setAttribute('aria-label', label);
+      b.setAttribute('aria-pressed', String(on));
+      if (bg) b.style.background = bg;
+      return b;
+    };
+    colors.append(colorBtn('Theme color', null, null));
+    for (const sw of SWATCHES) colors.append(colorBtn(sw.name, sw.hex.slice(1), sw.hex));
+
+    const list = document.createElement('div');
+    list.className = 'finishlist';
+    const preview = (f: Finish) => {
+      const [c, ctx] = makeCanvas(32, 32);
+      const tex = finishPixels(f, colorOf(f, s.brush.color ?? undefined, theme), 0, 0);
+      ctx.putImageData(new ImageData(new Uint8ClampedArray(tex.data.buffer as ArrayBuffer, tex.data.byteOffset, tex.data.byteLength), 32, 32), 0, 0);
+      c.style.width = '64px';
+      c.style.imageRendering = 'pixelated';
+      return c;
+    };
+    const draw = () => {
+      list.replaceChildren();
+      const q = this.finishText.trim().toLowerCase();
+      let any = false;
+      // The theme's own floors or wall come first, so a painted area can be set back to "whatever the theme says".
+      if (!q) {
+        list.append(Object.assign(document.createElement('b'), { textContent: 'Follows the theme' }));
+        const row = document.createElement('div');
+        row.className = 'picks';
+        if (surface === 'floor') for (const code of FLOOR_CODES) row.append(swatch('floor', code, FLOOR_NAMES[code], s.tool === 'floor' && !s.brush.floorFinish && s.brush.floor === code, () => a.pickFloor(code)));
+        else row.append(swatch('wall', '#', 'Wall', s.tool === 'wall' && !s.brush.wallFinish && s.brush.wall === '#', () => a.pickWall('#')));
+        list.append(row);
+      }
+      for (const g of groups) {
+        const inGroup = finishes.filter((f) => f.group === g && (!q || f.name.toLowerCase().includes(q) || f.id.includes(q)));
+        if (!inGroup.length) continue;
+        any = true;
+        list.append(Object.assign(document.createElement('b'), { textContent: GROUP_NAMES[g] }));
+        const row = document.createElement('div');
+        row.className = 'picks';
+        for (const f of inGroup) {
+          const on = s.tool === tool && current === f.id;
+          const b = button('', () => a.pickFinish(surface, f.id), { className: 'pick' + (on ? ' on' : ''), title: f.name });
+          b.setAttribute('aria-label', f.name);
+          b.setAttribute('aria-pressed', String(on));
+          b.append(preview(f), Object.assign(document.createElement('span'), { textContent: f.name }));
+          row.append(b);
+        }
+        list.append(row);
+      }
+      if (surface === 'wall' && !q) {
+        list.append(Object.assign(document.createElement('b'), { textContent: 'Special walls' }));
+        const row = document.createElement('div');
+        row.className = 'picks';
+        for (const [code, name] of WALL_NAMES) if (code !== '#') row.append(swatch('wall', code, name, s.tool === 'wall' && !s.brush.wallFinish && s.brush.wall === code, () => a.pickWall(code)));
+        list.append(row);
+      }
+      if (q && !any) list.append(Object.assign(document.createElement('div'), { className: 'bnote', textContent: 'Nothing matches.' }));
+    };
+    search.oninput = () => {
+      this.finishText = search.value;
+      draw();
+    };
+    root.append(search, colors, list);
+    draw();
+  }
+
   render(s: PanelState) {
     const a = this.api;
     const sections: HTMLElement[] = [];
@@ -235,20 +351,25 @@ export class BuilderPanel {
 
     const tabs = document.createElement('div');
     tabs.className = 'tabs';
-    for (const [id, label] of [['floors', 'Floors'], ['walls', 'Walls'], ['furniture', 'Items'], ['rooms', 'Rooms'], ['custom', 'Custom'], ['history', 'History']] as const) {
+    for (const [id, label] of [['floors', 'Floors'], ['walls', 'Walls'], ['themes', 'Themes'], ['furniture', 'Items'], ['rooms', 'Rooms'], ['kits', 'Kits'], ['custom', 'Custom'], ['history', 'History']] as const) {
       tabs.append(button(label, () => a.setTab(id), { className: s.tab === id ? 'on' : '' }));
     }
     sections.push(tabs);
 
     const grid = document.createElement('div');
     grid.className = 'picks';
-    if (s.tab === 'floors') {
-      for (const code of FLOOR_CODES) grid.append(swatch('floor', code, FLOOR_NAMES[code], s.tool === 'floor' && s.brush.floor === code, () => a.pickFloor(code)));
-    } else if (s.tab === 'walls') {
-      for (const [code, name] of WALL_NAMES) grid.append(swatch('wall', code, name, s.tool === 'wall' && s.brush.wall === code, () => a.pickWall(code)));
+    if (s.tab === 'floors' || s.tab === 'walls') {
+      grid.className = 'finishes';
+      this.renderFinishes(grid, s, s.tab === 'floors' ? 'floor' : 'wall');
+    } else if (s.tab === 'themes') {
+      grid.className = 'themespanel';
+      renderThemes(grid, s, a);
     } else if (s.tab === 'furniture') {
       grid.className = 'items';
       this.renderItems(grid, s);
+    } else if (s.tab === 'kits') {
+      grid.className = 'themespanel';
+      renderKits(grid, { tool: s.tool, kit: s.brush.kit }, a);
     } else if (s.tab === 'rooms') {
       grid.className = 'rooms';
       this.renderRooms(grid, s);
@@ -310,7 +431,7 @@ export class BuilderPanel {
         row.className = 'hrow';
         const pick = s.resolve[c.key];
         row.append(
-          button(c.key.replace(/^obj:/, '').replace(':', ' '), () => a.focus(c.tiles), { className: 'link', title: 'Show on the map' }),
+          button(clashLabel(c.key), () => a.focus(c.tiles), { className: 'link', title: 'Show on the map' }),
           button('Keep mine', () => a.choose(c.key, 'mine'), { className: pick === 'mine' ? 'on' : '' }),
           button('Keep theirs', () => a.choose(c.key, 'theirs'), { className: pick === 'theirs' ? 'on' : '' }),
         );
@@ -396,7 +517,27 @@ export class BuilderPanel {
       jam.onchange = () => a.patchRoom({ jam: jam.checked });
       const cap = Object.assign(document.createElement('input'), { type: 'number', min: '1', max: '50', value: room.capacity === undefined ? '' : String(room.capacity), placeholder: 'any', ariaLabel: 'Most people' });
       cap.onchange = () => a.patchRoom({ capacity: cap.value === '' ? null : Number(cap.value) });
+      const style = document.createElement('select');
+      style.setAttribute('aria-label', 'Style');
+      for (const [id, label] of [['', 'Office theme'], ...THEMES.map((t) => [t.id, t.name] as const)]) {
+        style.append(Object.assign(document.createElement('option'), { value: id, textContent: label, selected: (room.style ?? '') === id }));
+      }
+      style.onchange = () => a.patchRoom({ style: style.value === '' ? null : style.value });
+      const stylePic = () => {
+        const pic = themePreview(themeById(style.value || s.officeTheme));
+        pic.style.imageRendering = 'pixelated';
+        pic.style.width = '96px';
+        return pic;
+      };
+      let pic = stylePic();
+      style.addEventListener('change', () => {
+        const next = stylePic();
+        pic.replaceWith(next);
+        pic = next;
+      });
       box.append(
+        row(document.createTextNode('Style (look only)'), style),
+        pic,
         row(document.createTextNode('Private (closed door)'), priv),
         row(document.createTextNode('Knock to enter'), restricted),
         row(document.createTextNode('Jam Room (plays shared music for everyone inside)'), jam),

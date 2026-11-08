@@ -15,7 +15,7 @@ import { MeshTransport, shareScreen } from './media';
 import { InkStore } from './inkModel';
 import { ShareStage, stagePlan, type StageItem } from './shareStage';
 import {
-  areaLabel, blocked, closeDeskCard, deskTitle, showDeskCue, notice, deskCardOpen, deskMarkers, deskTags, facedDesk, initOfficeUi, onNotify,
+  areaLabel, blocked, closeDeskCard, deskOwnerName, deskOwners, myDeskId, deskTitle, showDeskCue, notice, deskCardOpen, deskMarkers, deskTags, facedDesk, initOfficeUi, onNotify,
   onSprites, onWelcome, openDeskCard, predictEntry, setAdminState, setBuilding, setOffice, showDeskHint, updateArea, walkToMyDesk,
 } from './office-ui';
 import { Net } from './net';
@@ -33,7 +33,7 @@ import { panelPlan } from '../shared/desk-presence';
 import { syncItems, onItemsChanged } from './items-client';
 import { Studio } from './studio/studio';
 import { onHelperStatus, setHelperStatus } from './studio/helper-ui';
-import { loadLayout, recompile } from './world-client';
+import { deskLooks, loadLayout, recompile, setDeskLooks } from './world-client';
 import { mouseLook, readInvert, writeInvert } from './look';
 import { ArenaClient, TEAM_COLOR } from './arena/client';
 import { ArenaHud } from './arena/hud';
@@ -46,6 +46,9 @@ import { JamClient } from './jam/client';
 import { Ducker, Mixer } from './jam/mixer';
 import { JamPlayer } from './jam/player';
 import { Station } from './jam/station';
+import { DeskLookPanel } from './desk-look/panel';
+import { setSeason } from './surfaces';
+import { extraLight } from './light';
 
 // Art checks in tools/e2e read the avatar painter from the page.
 if (location.search.includes('arthash')) (window as unknown as { __shyftArt: unknown }).__shyftArt = { makeAvatar, CATALOG };
@@ -81,6 +84,12 @@ const builder = new Builder({
   panel: $('builderPanel'),
   notice: (text, ttlMs = 3000) => notice(text, { key: 'builder', ttlMs }),
   here: () => ({ x: me.x, y: me.y }),
+  claimedDesks: () => Object.keys(deskOwners()),
+  looks: () => deskLooks,
+  decoratedBy: (x, y) => {
+    const desk = getWorld().desks.find((d) => d.tiles.some((t) => t.x === x && t.y === y));
+    return desk && deskLooks[desk.id] ? (deskOwnerName(desk.id) ?? null) : null;
+  },
   onClose: () => {
     renderer2d.setWorld(getWorld());
     buildBtn.classList.remove('on');
@@ -94,6 +103,7 @@ const jamCard = new JamCard($('jamCard'), jamMixer, (m) => net.send(m));
 const jamClient = new JamClient({ send: (m) => net.send(m), mixer: jamMixer, station: new Station(jamMixer), player: new JamPlayer(jamCard.playerHost) });
 jamCard.bind(jamClient);
 jamClient.onChange = () => jamCard.render();
+const deskLookPanel = new DeskLookPanel($('deskLookPanel'), { send: (m) => net.send(m), deskId: () => myDeskId(), draft: (d) => (renderer2d.deskDraft = d) });
 const jamDucker = new Ducker();
 // Browsers keep sound off until the person has interacted with the page: the first click or key press starts it.
 for (const ev of ['pointerdown', 'keydown'] as const) {
@@ -773,6 +783,11 @@ function onMessage(msg: ServerMsg) {
       session.isAdmin = !!msg.isAdmin;
       session.token = msg.session ?? '';
       session.canBuild = !!msg.canBuild;
+      session.season = msg.season ?? session.season;
+      setSeason(session.season);
+      session.tzOffsetMin = msg.tzOffsetMin ?? 0;
+      session.clockOffset = msg.now === undefined ? 0 : msg.now - Date.now();
+      setDeskLooks(msg.deskLooks ?? {}, false); // the office loads right after, with these
       buildBtn.hidden = !session.canBuild;
       updateCustomObjects(msg.objects ?? [], () => builder.refreshPanel()); // before the office loads: it may place them
       session.ice = msg.ice ?? [];
@@ -897,6 +912,18 @@ function onMessage(msg: ServerMsg) {
       break;
     case 'arenaBoard':
       arena.onBoard(msg);
+      break;
+    case 'deskLooks':
+      setDeskLooks(msg.looks);
+      deskLookPanel.onLooks();
+      break;
+    case 'deskLookError':
+      deskLookPanel.onError(msg.message);
+      break;
+    case 'season':
+      session.season = msg.season;
+      setSeason(msg.season);
+      repaintOffice();
       break;
     case 'objects':
       updateCustomObjects(msg.objects, () => builder.refreshPanel());
@@ -1078,6 +1105,12 @@ function renderZone() {
   updateLockHint();
 }
 
+/** Paints the office again from the same world, for a change that is not in the world itself (the season). */
+function repaintOffice() {
+  if (!builder.active) renderer2d.repaint();
+  raycaster.rebuild();
+}
+
 // A new office arrived: repaint the map, rebuild the first-person view, and drop anything that pointed at the old one.
 onWorldChange((w) => {
   if (!builder.active) renderer2d.setWorld(w);
@@ -1211,7 +1244,9 @@ function render(now: number) {
   arenaShop.update();
   // Which desk space you are in: a strong highlight top-down, and the "Your desk" cue in both views.
   const { highlight, view } = deskPresenceNow(me, now);
-  showDeskCue(view ? null : deskCueText(highlight)); // once the desk view is open its heading says "Your desk"
+  // Members decorate their own desk, also while building is off; guests have no desk to decorate.
+  showDeskCue(view ? null : deskCueText(highlight), highlight?.mine && !me.memberId.startsWith('eph-') ? () => deskLookPanel.show() : null); // once the desk view is open its heading says "Your desk"
+  callPanel.setCustomize(view && view === myDeskId() && !me.memberId.startsWith('eph-') ? () => deskLookPanel.show() : null);
   const room = roomViewNow(me, now);
   if (view !== deskView || room !== roomView) {
     deskView = view;
@@ -1225,6 +1260,7 @@ function render(now: number) {
     renderer2d.render(ctx, w, h, zoom, dpr, me, people, now);
   } else {
     raycaster.resize(w, h);
+    raycaster.extraLight = extraLight(getWorld(), me.x, me.y, session.season, Date.now(), session.clockOffset, session.tzOffsetMin);
     // Jam Rooms carry a note mark on their label, whether or not you are inside.
     raycaster.markers = [
       ...deskMarkers(),

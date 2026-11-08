@@ -10,6 +10,10 @@ if (process.env.TURN_URL) {
 }
 
 const helper = drafterFromEnv();
+// OFFICE_FAKE_DATE starts the server's clock at that date and time and lets it run on normally (for checking seasons and daylight).
+const fake = process.env.OFFICE_FAKE_DATE ? Date.parse(process.env.OFFICE_FAKE_DATE) : NaN;
+if (process.env.OFFICE_FAKE_DATE && Number.isNaN(fake)) throw new Error(`OFFICE_FAKE_DATE is not a date: ${process.env.OFFICE_FAKE_DATE}`);
+const hemisphere = process.env.OFFICE_HEMISPHERE === 'south' ? 'south' : 'north';
 const root = path.resolve(import.meta.dirname, '..');
 const server = await startServer({
   port: Number(process.env.PORT ?? 3001),
@@ -21,6 +25,7 @@ const server = await startServer({
   // The item helper is only available when an admin has set ITEM_AI_KEY (see README, Furnishing the office).
   drafter: helper.drafter,
   helperTimeoutMs: helper.timeoutMs,
+  clock: { startAt: Number.isNaN(fake) ? undefined : fake, hemisphere },
 });
 console.log(`Shyft Office server on http://localhost:${server.port}`);
 

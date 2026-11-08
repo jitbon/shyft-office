@@ -1,5 +1,6 @@
 // One set of colours for every material, so the top-down and first-person views paint the same office.
 // Muted and warm, with two or three shades per material for depth.
+import type { Theme } from '../shared/themes';
 
 const parse = (hex: string): [number, number, number] => {
   const n = parseInt(hex.slice(1), 16);
@@ -54,3 +55,35 @@ export const PALETTE = {
 
   ceiling: { base: '#e2e0d9', speck: '#d3d1c9', line: '#bdbbb2', lamp: '#d9d6c8', glow: '#fffbe8' },
 };
+
+export type Palette = typeof PALETTE;
+
+const cache = new Map<string, Palette>();
+
+/**
+ * The full palette for a theme: wall tops, trim, special walls, ceiling and built-in furniture take the theme's colors, and every
+ * other material keeps its Warm Studio shades. Warm Studio itself is `PALETTE`, so today's office is unchanged.
+ */
+export function paletteFor(theme: Theme): Palette {
+  if (theme.id === 'warm-studio') return PALETTE;
+  let p = cache.get(theme.id);
+  if (p) return p;
+  const f = theme.furniture, s = theme.special;
+  p = {
+    ...PALETTE,
+    wallCap: { ...theme.cap },
+    wallFace: { ...PALETTE.wallFace, trim: theme.trim.base, trimLight: theme.trim.light },
+    glass: { ...PALETTE.glass, frame: s.glassFrame, frameDark: shade(s.glassFrame, 0.15) },
+    board: { ...PALETTE.board, frame: s.boardFrame, frameDark: shade(s.boardFrame, 0.15) },
+    shelf: { ...PALETTE.shelf, wood: s.shelfWood, dark: shade(s.shelfWood, 0.35), light: light(s.shelfWood, 0.2) },
+    counter: { ...PALETTE.counter, top: s.counterTop, topDark: shade(s.counterTop, 0.12), cabinet: s.cabinet, cabinetDark: shade(s.cabinet, 0.22), cabinetLight: light(s.cabinet, 0.15) },
+    desk: { ...PALETTE.desk, top: f.deskTop, topLight: light(f.deskTop, 0.14), topDark: shade(f.deskTop, 0.12), grain: shade(f.deskTop, 0.06), lip: shade(f.deskTop, 0.32), lipDark: shade(f.deskTop, 0.45) },
+    chair: { ...PALETTE.chair, seat: f.chairSeat, seatLight: light(f.chairSeat, 0.18), seatDark: shade(f.chairSeat, 0.25), base: shade(f.chairSeat, 0.5) },
+    table: { ...PALETTE.table, top: f.tableTop, topLight: light(f.tableTop, 0.14), edge: shade(f.tableTop, 0.32) },
+    plant: { ...PALETTE.plant, pot: f.plantPot, potLight: light(f.plantPot, 0.16), potDark: shade(f.plantPot, 0.24) },
+    sofa: { ...PALETTE.sofa, base: f.sofa, light: light(f.sofa, 0.16), dark: shade(f.sofa, 0.24), seam: shade(f.sofa, 0.38) },
+    ceiling: { ...theme.ceiling },
+  };
+  cache.set(theme.id, p);
+  return p;
+}

@@ -1,4 +1,5 @@
 import type { SpriteIndex } from '../shared/protocol';
+import type { Season } from '../shared/season';
 
 /** Facts about this connection that several UI modules need. Filled in from `welcome`. */
 export const session = {
@@ -11,4 +12,8 @@ export const session = {
   canBuild: false,
   ice: [] as RTCIceServer[],
   sprites: [] as SpriteIndex,
+  /** The season on the server, its offset from UTC in minutes, and the server clock minus this browser's clock (ms). */
+  season: 'summer' as Season,
+  tzOffsetMin: 0,
+  clockOffset: 0,
 };

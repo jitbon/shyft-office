@@ -1,7 +1,10 @@
 // Turns a Layout into the lookup data every rule reads: the tile grid, areas, pods, desks and the spawn point.
 // Pure, so the server, both renderers and the tests all get the same world from the same layout.
 import { currentCatalog, itemAt, type Catalog, type CatalogItem } from './catalog';
-import { NO_WALL, rotFootprint, turnPoint, type Face, type Layout, type PlacedObject, type Pod, type Rect, type Rot, type Room } from './layout';
+import { COMPUTER_KINDS, lookObjects, type DeskLook } from './desk-look';
+import { DEFAULT_THEME, isThemeId, resolvePaintKey, themeById, themeFloorPaint, themeWallPaint, type ResolvedPaint } from './themes';
+import { paintIndex } from './finishes';
+import { FACE_STEP, NO_WALL, rotFootprint, turnPoint, type Face, type Layout, type PlacedObject, type Pod, type Rect, type Rot, type Room } from './layout';
 
 export type Area = Room;
 export type DeskPod = Pod;
@@ -84,12 +87,26 @@ export interface World {
   wallDecor: WallDecorPiece[];
   floorArt: FloorArtPiece[];
   layout: Layout;
+  /** The desk looks this world was compiled with. */
+  looks: Readonly<Record<string, DeskLook>>;
+  /** The office theme id. */
+  theme: string;
+  /** The id of the theme that applies at a tile: its room's style if it has one, else the office theme. */
+  styleAt(x: number, y: number): string;
+  /** What the floor (or the wall face looking south) at a tile is painted with. Looks only: it never changes who can walk where. */
+  paintAt(x: number, y: number, surface: 'floor' | 'wall'): ResolvedPaint;
+  /** What the face of a wall tile looking `face` is painted with: it takes the style of the floor tile it faces. */
+  wallFacePaint(x: number, y: number, face: Face): ResolvedPaint;
 }
 
 const keyOf = (x: number, y: number) => `${x},${y}`;
 const inRect = (x: number, y: number, [x0, y0, x1, y1]: Rect) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
 
-export function compileWorld(layout: Layout, catalog: Catalog = currentCatalog()): World {
+/**
+ * Turns a layout into the world every rule reads. `looks` are the desk looks of the members who hold desks (by desk id): they change
+ * how those desks are drawn, and nothing else. Collision, desks and areas always come from the layout alone.
+ */
+export function compileWorld(layout: Layout, catalog: Catalog = currentCatalog(), looks: Readonly<Record<string, DeskLook>> = {}): World {
   const { w, h } = layout;
   const cells: string[] = Array.from(layout.floor);
   const floor = Array.from({ length: h }, (_, y) => layout.floor.slice(y * w, (y + 1) * w));
@@ -111,9 +128,9 @@ export function compileWorld(layout: Layout, catalog: Catalog = currentCatalog()
   }
   const hosts = new Map(objects.map((o) => [o.obj.id, o]));
   const deskItems: DeskItemPiece[] = [];
-  for (const { obj, item } of attached) {
+  const placeOnDesk = (obj: PlacedObject, item: CatalogItem) => {
     const host = obj.on ? hosts.get(obj.on) : undefined;
-    if (!host || host.item.surface === undefined || !obj.at) continue;
+    if (!host || host.item.surface === undefined || !obj.at) return;
     const [hw, hd] = host.item.footprint;
     const [iw, id] = rotFootprint(item.footprint, obj.rot);
     // The item's centre in the host's own frame, turned with the host to the world.
@@ -121,7 +138,8 @@ export function compileWorld(layout: Layout, catalog: Catalog = currentCatalog()
     const rot = ((host.obj.rot + obj.rot) & 3) as Rot;
     const [ww, wd] = rotFootprint(item.footprint, rot);
     deskItems.push({ obj, item, host, x: host.x + cx - ww / 2, y: host.y + cy - wd / 2, w: ww, d: wd, rot, z: host.item.surface });
-  }
+  };
+  for (const { obj, item } of attached) placeOnDesk(obj, item);
 
   if (inside(layout.spawn.x, layout.spawn.y)) cells[layout.spawn.y * w + layout.spawn.x] = 'S';
   const stamp = (o: WorldObject, solid: boolean) => {
@@ -145,16 +163,76 @@ export function compileWorld(layout: Layout, catalog: Catalog = currentCatalog()
   const grid = Array.from({ length: h }, (_, y) => cells.slice(y * w, (y + 1) * w).join(''));
 
   // A private room inside a bigger open area wins for the tiles it covers, so private rooms come first.
-  const copy = (r: Room) => ({ ...r, rects: r.rects.map((q) => [...q] as Rect), allowed: [...r.allowed] });
+  const copy = (r: Room) => ({ ...r, rects: r.rects.map((q) => [...q] as Rect), allowed: [...r.allowed], ...(r.style ? { style: { ...r.style } } : {}) });
   const areas = [...layout.rooms.filter((r) => r.private).map(copy), ...layout.rooms.filter((r) => !r.private).map(copy)];
   const pods = layout.pods.map((p) => ({ ...p, rects: p.rects.map((q) => [...q] as Rect) }));
   const blocked = (x: number, y: number) => !inside(x, y) || block[y * w + x] === 1;
 
+  const desks = deriveDesks(objects, pods, blocked);
+
+  // Desk looks change only what is shown: items swapped for ones of the same size, things set on the desk, a rug, and a floor finish.
+  const lookFloor = new Map<number, string>();
+  let shownObjects = objects;
+  for (const [deskId, look] of Object.entries(looks)) {
+    const desk = desks.find((d) => d.id === deskId);
+    const deskObj = objects.find((o) => o.obj.id === deskId);
+    if (!desk || !deskObj) continue;
+    const swap = (target: WorldObject | undefined, kind: string | undefined) => {
+      const it = kind === undefined ? undefined : catalog.get(kind);
+      if (!target || !it || it.kind !== 'floor' || it.footprint[0] !== target.item.footprint[0] || it.footprint[1] !== target.item.footprint[1]) return;
+      shownObjects = shownObjects.map((o) => (o === target ? { ...o, item: it } : o));
+    };
+    swap(deskObj, look.desk);
+    swap(objects.find((o) => o.item.tile === 'h' && desk.seat.x >= o.x && desk.seat.x < o.x + o.w && desk.seat.y >= o.y && desk.seat.y < o.y + o.d), look.chair);
+    const placed = lookObjects(look, deskObj.obj, deskObj.item, catalog);
+    const hide = (p: DeskItemPiece) => p.host.obj.id === deskId && (COMPUTER_KINDS.includes(p.obj.kind) ? look.computer !== undefined : look.items.length > 0);
+    for (let i = deskItems.length - 1; i >= 0; i--) if (hide(deskItems[i])) deskItems.splice(i, 1);
+    for (const o of placed.items) {
+      const it = itemAt(o.kind, undefined, catalog);
+      if (it) placeOnDesk(o, it);
+    }
+    if (placed.rug) {
+      const it = itemAt(placed.rug.kind, undefined, catalog);
+      if (it) {
+        const [fw, fd] = rotFootprint(it.footprint, placed.rug.rot);
+        floorArt.push({ obj: placed.rug, item: it, x: placed.rug.x, y: placed.rug.y, w: fw, d: fd, rot: placed.rug.rot });
+      }
+    }
+    if (look.floor) for (const t of desk.tiles) lookFloor.set(t.y * w + t.x, look.floor);
+  }
+
+  const officeTheme = isThemeId(layout.theme) ? layout.theme : DEFAULT_THEME;
+  const styled = areas.filter((a) => a.style && isThemeId(a.style.theme));
+  const styleAt = (x: number, y: number): string => {
+    for (const a of styled) if (a.rects.some((q) => inRect(x, y, q))) return a.style!.theme;
+    return officeTheme;
+  };
+  const explicit = (grid: string | undefined, x: number, y: number): string | undefined => {
+    if (!grid || !inside(x, y)) return undefined;
+    const i = paintIndex(grid[y * w + x]);
+    return i >= 0 ? layout.paints?.[i] : undefined;
+  };
+  const paintAt = (x: number, y: number, surface: 'floor' | 'wall'): ResolvedPaint =>
+    surface === 'floor' ? floorPaintAt(x, y) : wallFacePaint(x, y, 's');
+  const floorPaintAt = (x: number, y: number): ResolvedPaint => {
+    const theme = themeById(styleAt(x, y));
+    // A desk look's floor comes first, then a builder's paint, then what the theme says.
+    const key = lookFloor.get(y * w + x) ?? explicit(layout.floorPaint, x, y);
+    return (key && resolvePaintKey(key, theme)) || themeFloorPaint(theme, floor[y]?.[x] ?? '.');
+  };
+  const wallFacePaint = (x: number, y: number, face: Face): ResolvedPaint => {
+    const [dx, dy] = FACE_STEP[face];
+    const theme = themeById(inside(x + dx, y + dy) ? styleAt(x + dx, y + dy) : officeTheme);
+    const key = layout.walls[y * w + x] === '#' ? explicit(layout.wallPaint, x, y) : undefined;
+    return (key && resolvePaintKey(key, theme)) || themeWallPaint(theme);
+  };
+
   return {
     w, h, grid, floor, block, areas, pods,
-    desks: deriveDesks(objects, pods, blocked),
+    looks, theme: officeTheme, styleAt, paintAt, wallFacePaint,
+    desks,
     spawn: { x: layout.spawn.x + 0.5, y: layout.spawn.y + 0.5 },
-    objects,
+    objects: shownObjects,
     deskItems,
     wallDecor,
     floorArt,

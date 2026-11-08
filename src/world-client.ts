@@ -1,5 +1,6 @@
 // Keeps this browser's copy of the office in step with the server's published layout, and wraps the builder API.
 import { currentCatalog } from '../shared/catalog';
+import type { DeskLook } from '../shared/desk-look';
 import type { Layout } from '../shared/layout';
 import { setWorld } from '../shared/map';
 import { compileWorld } from '../shared/world';
@@ -37,9 +38,18 @@ export interface Published {
 /** The layout this browser last loaded, which builders start their drafts from. */
 export let published: Published | null = null;
 
-/** The custom objects changed: recompile the office we have, so placed custom objects show or vanish. */
+/** The look of every claimed desk that has one, by desk id, as the server last said. */
+export let deskLooks: Record<string, DeskLook> = {};
+
+/** Sets the desk looks. With `redraw`, the office is compiled again so they show at once. */
+export function setDeskLooks(looks: Record<string, DeskLook>, redraw = true) {
+  deskLooks = looks;
+  if (redraw) recompile();
+}
+
+/** The custom objects or desk looks changed: recompile the office we have, so they show or vanish. */
 export function recompile() {
-  if (published) setWorld(compileWorld(published.layout, currentCatalog()));
+  if (published) setWorld(compileWorld(published.layout, currentCatalog(), deskLooks));
 }
 
 /** Fetches a published revision (the current one when `rev` is omitted) and makes it the office. */
@@ -48,6 +58,6 @@ export async function loadLayout(rev?: number): Promise<Published | null> {
   if (r.status !== 200) return null;
   published = r.body;
   session.layoutRev = r.body.rev;
-  setWorld(compileWorld(r.body.layout, currentCatalog()));
+  setWorld(compileWorld(r.body.layout, currentCatalog(), deskLooks));
   return r.body;
 }

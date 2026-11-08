@@ -15,7 +15,8 @@
     "objects:template": "tsx tools/object-template.ts",
     "objects:check": "tsx tools/object-check.ts",
     "items:template": "tsx tools/item-template.ts",
-    "items:check": "tsx tools/item-check.ts"
+    "items:check": "tsx tools/item-check.ts",
+    "finishes:sheet": "tsx tools/finishes-sheet.ts"
   },
   "dependencies": {
     "tsx": "^4.20.0",

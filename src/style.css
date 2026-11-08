@@ -127,6 +127,34 @@ select {
   pointer-events: none;
 }
 
+#deskCue .cueBtn { margin-left: 10px; pointer-events: auto; font: 800 12px/1 var(--font); padding: 4px 10px; border-radius: var(--radius-pill); border: 0; background: var(--ink); color: #fff; cursor: pointer; }
+#deskLookPanel {
+  right: 16px;
+  top: 70px;
+  width: min(320px, calc(100vw - 32px));
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+#deskLookPanel .head { display: flex; justify-content: space-between; align-items: center; font: 800 14px/1.4 var(--font); }
+#deskLookPanel .sys, #deskLookPanel .bwarn { font-size: 13px; color: var(--muted); }
+#deskLookPanel .bwarn { color: var(--accent); }
+#deskLookPanel .dlRow, #deskLookPanel .dlItem { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
+#deskLookPanel select { max-width: 170px; }
+#deskLookPanel .dlBlock { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+#deskLookPanel .dlTiles { display: flex; flex-wrap: wrap; gap: 4px; }
+#deskLookPanel .dlTile { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 3px; font-size: 10px; border: 2px solid transparent; border-radius: 6px; max-width: 64px; }
+#deskLookPanel .dlTile.on { border-color: var(--accent); }
+#deskLookPanel .dlTile canvas { image-rendering: pixelated; width: 44px; height: auto; max-height: 44px; object-fit: contain; }
+#deskLookPanel .dlItem.on .dlName { font-weight: 800; color: var(--accent); }
+#deskLookPanel .dlName { background: none; border: 0; padding: 0; color: inherit; text-align: left; cursor: pointer; }
+#deskLookPanel .dlThumb { align-self: stretch; }
+#deskLookPanel .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+#deskLookPanel .dlPreview { align-self: center; border-radius: 6px; max-width: 100%; }
+body.building #deskLookPanel { display: none; }
+
 #deskHint {
   left: 50%;
   bottom: 24%;
@@ -431,6 +459,18 @@ body.building #statusPanel, body.building #adminPanel, body.building #help, body
 }
 #builderPanel .pick.on { border-color: var(--accent); }
 #builderPanel .pick canvas { image-rendering: pixelated; width: 44px; height: auto; border-radius: 4px; }
+#builderPanel .themespanel { display: flex; flex-direction: column; gap: 8px; }
+#builderPanel .themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+#builderPanel .themecard { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border-radius: 8px; }
+#builderPanel .themecard.on { outline: 2px solid var(--accent); }
+#builderPanel .themecard canvas { width: 96px; height: 64px; border-radius: 4px; }
+#builderPanel .finishes { display: flex; flex-direction: column; gap: 8px; }
+#builderPanel .finishlist { display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow-y: auto; }
+#builderPanel .finishlist > b { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+#builderPanel .colors { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+#builderPanel .swatchbtn { width: 22px; height: 22px; padding: 0; border-radius: 6px; border: 2px solid transparent; }
+#builderPanel .swatchbtn.on { border-color: var(--accent); }
+#builderPanel .colors .swatchbtn:first-child { width: auto; padding: 0 8px; height: 22px; font-size: 12px; }
 #builderPanel .history, #builderPanel .clashes, #builderPanel .problems { display: flex; flex-direction: column; gap: 4px; }
 #builderPanel .hrow { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 13px; }
 #builderPanel .hrow button { padding: 2px 8px; font-size: 12px; }

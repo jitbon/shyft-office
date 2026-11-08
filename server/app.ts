@@ -25,6 +25,8 @@ import { pinnedVersions } from '../shared/items-edit';
 import { JUMP_COOLDOWN_MS } from '../shared/jump';
 import { LinkEngine } from './links';
 import { MatchEngine } from './arena';
+import { DESK_LOOK_MESSAGES, clampDeskLook, validateDeskLook, type DeskLookError, type LookDesk } from '../shared/desk-look';
+import { seasonOf } from '../shared/season';
 import { JamEngine, REFUSALS, type JamTimings, type TitleLookup } from './jam';
 import { moveAllowed, type Timings } from '../shared/arena';
 import { ShareRegistry } from './shares';
@@ -73,6 +75,8 @@ export interface ServerOptions {
   jamLookup?: TitleLookup;
   /** The clock Jam Rooms use, in ms; tests drive it. */
   jamNow?: () => number;
+  /** The office's clock: where it starts (default: now) and which hemisphere the seasons follow. */
+  clock?: { startAt?: number; hemisphere?: 'north' | 'south'; now?: () => number; seasonCheckMs?: number };
 }
 
 export interface RunningServer {
@@ -402,6 +406,36 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
   const RING_COOLDOWN_MS = 5_000;
   const WAVE_COOLDOWN_MS = 2_000;
   const broadcastOffice = () => broadcast({ t: 'office', ...office.snapshot() });
+
+  // The office's clock (tests and OFFICE_FAKE_DATE start it elsewhere) and the season it shows.
+  const clockOffset = opts.clock?.now ? 0 : opts.clock?.startAt !== undefined ? opts.clock.startAt - Date.now() : 0;
+  const officeNow = opts.clock?.now ?? (() => Date.now() + clockOffset);
+  const hemisphere = opts.clock?.hemisphere ?? 'north';
+  const seasonNow = () => seasonOf(new Date(officeNow()), hemisphere);
+  let lastSeason = seasonNow();
+  const seasonTimer = setInterval(() => {
+    const now = seasonNow();
+    if (now !== lastSeason) {
+      lastSeason = now;
+      broadcast({ t: 'season', season: now });
+    }
+  }, opts.clock?.seasonCheckMs ?? 3_600_000);
+  seasonTimer.unref();
+
+  /** Desk looks: shown to everyone, for every claimed desk that has one. */
+  const broadcastLooks = () => broadcast({ t: 'deskLooks', looks: office.looksByDesk() });
+  /** The desk a look is checked against: the member's desk as the office has it now. */
+  const lookDeskFor = (deskId: string): LookDesk | null => {
+    const world = getWorld();
+    const desk = world.desks.find((d) => d.id === deskId);
+    const placed = world.objects.find((o) => o.obj.id === deskId);
+    if (!desk || !placed) return null;
+    const chair = world.objects.find((o) => o.item.tile === 'h' && desk.seat.x >= o.x && desk.seat.x < o.x + o.w && desk.seat.y >= o.y && desk.seat.y < o.y + o.d);
+    return { obj: placed.obj, item: placed.item, chairItem: chair?.item, tiles: desk.tiles };
+  };
+  const looksCooldown = new Cooldown(1000);
+  const REMOVED_TEXT = (memberId: string) =>
+    `Your desk was removed in the latest office update.${office.deskLookOf(memberId) ? ' Your desk decorations are saved for your next desk.' : ''}`;
   const sendAdminState = (c: Conn) => {
     if (!c.isAdmin) return;
     const areaAllowed: Record<string, string[]> = {};
@@ -449,8 +483,9 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     for (const { memberId, deskId } of office.reconcile().released) {
       const online = [...conns.values()].filter((c) => c.p.memberId === memberId);
       if (!online.length) office.addDeskNotice(memberId, 'removed');
-      for (const c of online) send(c.ws, { t: 'notify', kind: 'deskRemoved', deskId, text: 'Your desk was removed in the latest office update.' });
+      for (const c of online) send(c.ws, { t: 'notify', kind: 'deskRemoved', deskId, text: REMOVED_TEXT(memberId) });
     }
+    broadcastLooks(); // a desk that moved keeps its look; one that is gone loses it (it stays saved with the member)
     const taken = new Set<string>();
     for (const c of conns.values()) {
       if (isBlocking(Math.floor(c.p.x), Math.floor(c.p.y))) continue;
@@ -515,6 +550,10 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         isAdmin: c.isAdmin,
         session: c.session,
         layoutRev: layouts.current.rev,
+        deskLooks: office.looksByDesk(),
+        season: seasonNow(),
+        tzOffsetMin: -new Date(officeNow()).getTimezoneOffset(),
+        now: officeNow(),
         canBuild: canBuild(c),
         objects: objects.list(),
         items: itemInfos(),
@@ -523,7 +562,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       sendAdminState(c);
       // Someone who lost their desk when the office was redesigned or updated hears about it once, on their first join.
       const deskNotice = office.takeDeskNotice(p.memberId);
-      if (deskNotice) send(ws, { t: 'notify', kind: deskNotice === 'reset' ? 'deskReset' : 'deskRemoved', ...(deskNotice === 'removed' ? { text: 'Your desk was removed in the latest office update.' } : {}) });
+      if (deskNotice) send(ws, { t: 'notify', kind: deskNotice === 'reset' ? 'deskReset' : 'deskRemoved', ...(deskNotice === 'removed' ? { text: REMOVED_TEXT(p.memberId) } : {}) });
       broadcast({ t: 'join', player: p }, ws);
       broadcastOffice();
       send(ws, arena.summary());
@@ -591,7 +630,24 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         return;
       }
       broadcastOffice();
+      if (msg.op === 'claim' || msg.op === 'unclaim') broadcastLooks(); // the holder's look appears or goes with the claim
       links.update();
+    } else if (msg.t === 'deskLook') {
+      const refuse = (code: DeskLookError) => send(ws, { t: 'deskLookError', code, message: DESK_LOOK_MESSAGES[code] });
+      if (me.memberId.startsWith('eph-')) return refuse('not-member');
+      if (!looksCooldown.ready(`desklook:${me.memberId}`)) return refuse('rate');
+      const deskId = office.deskOf(me.memberId);
+      const target = deskId ? lookDeskFor(deskId) : null;
+      if (!deskId || !target) return refuse('no-desk');
+      if (msg.look === null) office.setDeskLook(me.memberId, null);
+      else {
+        const look = clampDeskLook(msg.look);
+        if (!look) return refuse('unknown-item');
+        const bad = validateDeskLook(look, target, currentCatalog());
+        if (bad) return refuse(bad);
+        office.setDeskLook(me.memberId, look);
+      }
+      broadcastLooks();
     } else if (msg.t === 'deskInvite') {
       if (!isMemberId(msg.memberId)) {
         send(ws, { t: 'notify', kind: 'error', text: 'That is not someone you can invite.' });
@@ -936,6 +992,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       clearInterval(pruner);
       clearInterval(arenaTimer);
       clearInterval(jamTimer);
+      clearInterval(seasonTimer);
       reject(err); // e.g. the port is already in use
     });
     server.listen(opts.port, () => {
@@ -951,6 +1008,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
             clearInterval(pruner);
             clearInterval(arenaTimer);
             clearInterval(jamTimer);
+      clearInterval(seasonTimer);
             for (const ws of wss.clients) ws.terminate();
             wss.close(() => server.close(() => done()));
           }),

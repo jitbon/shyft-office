@@ -140,6 +140,32 @@ The published office is saved in `data/layout.json` (the current version and the
 in `data/drafts/`, custom objects in `data/objects/`, and items made in the studio in `data/items/` (drafts in `data/studio/`). `tools/e2e/cdp.mjs` is a small Chrome driver that was used to
 check all of this in a real browser.
 
+## Customizing the look
+
+The office's look is data in the layout, on top of what the builder places, and it never changes where anyone can walk.
+
+- **Themes.** The **Themes** tab in build mode restyles the whole office in one click: Warm Studio (the original, and what every
+  existing office keeps until someone picks another), Scandinavian, Industrial Loft, Cozy Cabin, Night Mode, Garden Atrium,
+  Retro Arcade and Space Station. A theme sets the floors and walls, the ceiling, built-in furniture, label colors and the tint of
+  first-person light. Everyone sees it after the next **Publish**.
+- **Finishes and colors.** The **Floors** and **Walls** tabs offer 29 floor and 22 wall finishes in groups (wood, tile, stone and
+  concrete, carpet, outdoor; paint, wallpaper, brick, panels…), each in the theme's color or one of 24 swatches, with a search box.
+  A theme-color finish follows theme changes; a swatch color stays. Windows, whiteboards, shelves and counters keep their own art.
+  Painting is looks only: walls still block and floors never change who can walk where. An office holds at most 94 different
+  painted finishes at once. `npm run finishes:sheet` writes `out/finishes.png`, a contact sheet of every finish to check by eye.
+- **Room styles and kits.** In the **Rooms** tab a room can take its own **Style**, which overrides the office theme inside it
+  (floor, ceiling, the inside face of its walls and the light, blended over about a tile when you walk in). The **Kits** tab
+  stamps a finished little room in one step: lounge, library corner, boardroom, café, game room, quiet booth, studio and garden
+  nook. A kit replaces what is under it, and one undo takes it back.
+- **Customize desk.** A member who holds a desk can change how their own desk space looks (a desk and chair of the same size, a
+  computer, up to six small things on the desk, one rug and a floor finish) with **Customize desk** on the "Your desk" cue, also
+  while building is off. Everyone sees it while the desk is theirs; it is saved with the member and comes back with their next
+  desk. Builders see their own version of the desk, with a note, in build mode.
+- **Seasonal touches and time-of-day light** are switches under the theme cards, both off by default. Seasonal touches add frost,
+  blossom, sun or leaves to windows and a garland, bunting, vines or leaves along plain walls, following the server's date.
+  Time-of-day light warms and dims first person with the server's clock (never darker than 70%); the top-down view does not change.
+  Set `OFFICE_FAKE_DATE` and `OFFICE_HEMISPHERE` (see Settings) to check them.
+
 ## Furnishing the office
 
 - **Where things go.** Pick an item in the **Items** tab and click: floor items take tiles, **desk items** (a lamp, a mug) stand
@@ -186,6 +212,8 @@ builder it moved to version 3: claims are kept, now named after the desk they be
 | `PORT` | Server port (default 3001) |
 | `ADMIN_TOKEN` | Enables the admin role for `?admin=<token>` |
 | `ITEM_AI_KEY`, `ITEM_AI_MODEL`, `ITEM_AI_URL`, `ITEM_AI_TIMEOUT_MS` | Optional: the service behind the studio's item helper (see Furnishing the office). Without a key there is no helper |
+| `OFFICE_FAKE_DATE` | Optional: an ISO date-time such as `2026-12-20T21:30:00`. The server's clock starts there and then runs on normally, to check seasonal touches and time-of-day light |
+| `OFFICE_HEMISPHERE` | `north` (default) or `south`: which way the seasons run |
 | `TURN_URL`, `TURN_USER`, `TURN_PASS` | Optional TURN relay for people behind strict firewalls. Calls go directly between browsers over public STUN otherwise |
 
 Rooms and desk pods are set up in build mode (see above); the office that ships with the app is `shared/default-layout.ts`. A room's size limit and
@@ -197,6 +225,7 @@ Rooms and desk pods are set up in build mode (see above); the office that ships 
   furniture, rooms and pods), the furniture it can hold, and the compiler that turns a layout into the tile grid, areas and
   desks. `shared/map.ts` exposes the current compiled office; both views, the server and collision all read it.
   `layout-check.ts` and `layout-merge.ts` find what is wrong with a layout and merge two edits; `objects.ts` is the custom object format. `items.ts` is the item (parts) format, `readymade.ts` the ready-made list, `items-edit.ts` what happens to placed copies when an item changes.
+- `shared/finishes.ts`, `shared/themes.ts`, `shared/room-kits.ts`, `shared/desk-look.ts`, `shared/season.ts`: the look of the office as pure data and rules (finish list and paint keys, themes and light, room kits, desk looks, seasons). `src/finish.ts` paints a finish into pixels with no canvas; `src/surfaces.ts` picks what each tile draws in both views; `src/seasonal.ts`, `src/light.ts`, `src/desk-look/` and `src/builder/{themes,kits}.ts` are seasonal touches, light tint, the Customize desk panel and the two builder tabs.
 - `shared/arena.ts`: every rule of Office Arena (teams, phases, damage, money, shots, spawns) as pure functions; `server/arena.ts`
   runs the one match and `src/arena/` draws its HUD, shop, scoreboard and panel.
 - `shared/proximity.ts`: who is linked to whom (distance, walls, private areas, desks, status). Pure functions.

@@ -37,6 +37,7 @@ export class CallPanel {
   private head = document.createElement('div');
   private headText = document.createElement('span');
   private shareBtn = document.createElement('button');
+  private customizeBtn = document.createElement('button');
   private banner = document.createElement('div');
   private bannerVideo = document.createElement('video');
   private bannerNote = document.createElement('span');
@@ -61,7 +62,11 @@ export class CallPanel {
       this.onShare();
       this.shareBtn.blur();
     };
-    this.head.append(this.headText, this.shareBtn);
+    this.customizeBtn.type = 'button';
+    this.customizeBtn.className = 'sharebtn';
+    this.customizeBtn.textContent = 'Customize desk';
+    this.customizeBtn.hidden = true;
+    this.head.append(this.headText, this.customizeBtn, this.shareBtn);
 
     this.banner.className = 'shareBanner';
     this.banner.hidden = true;
@@ -95,6 +100,15 @@ export class CallPanel {
     text.append(title, this.bannerNote, actions);
     this.banner.append(this.bannerVideo, text);
     this.setShareControl('idle');
+  }
+
+  /** Shows the Customize desk button in the heading (your own desk's view only), or hides it with null. */
+  setCustomize(open: (() => void) | null) {
+    this.customizeBtn.hidden = !open;
+    this.customizeBtn.onclick = open && (() => {
+      open();
+      this.customizeBtn.blur();
+    });
   }
 
   /** The state of the Share screen button. */

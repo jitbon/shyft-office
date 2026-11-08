@@ -229,8 +229,8 @@ export function footprintOf(kind: string, rot: number, catalog: Catalog = curren
 }
 
 /** `parseLayout` against a catalog. */
-export function parseLayoutWith(raw: unknown, catalog: Catalog = currentCatalog()): ParseResult {
-  return parseLayout(raw, (k) => catalog.has(k), (k) => catalog.get(k)?.footprint, (k) => catalog.get(k)?.kind);
+export function parseLayoutWith(raw: unknown, catalog: Catalog = currentCatalog(), opts: { lenient?: boolean } = {}): ParseResult {
+  return parseLayout(raw, (k) => catalog.has(k), (k) => catalog.get(k)?.footprint, (k) => catalog.get(k)?.kind, opts);
 }
 
 // ------------------------------------------------------------------ prefabs
