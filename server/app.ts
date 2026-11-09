@@ -10,12 +10,12 @@ import {
   AREAS, MAP_H, MAP_W, SPAWN, areaAt, areaById, deskAt, deskById, getWorld, isBlocking, nearestFreeTile, nearestFreeTileNear, setWorld, validateOffice,
 } from '../shared/map';
 import { compileWorld } from '../shared/world';
-import type { ClientMsg, ItemInfo, Look, PlayerState, ServerMsg } from '../shared/protocol';
+import type { ClientMsg, ItemInfo, Look, PlayerState, PlayerStatus, ServerMsg } from '../shared/protocol';
 import { isMemberId, isUuid } from '../shared/member';
 import { positionContext } from '../shared/proximity';
 import { INK_RATE_MSGS, INK_RATE_POINTS, validateInk, validateInkAllow, validateInkClear } from '../shared/ink';
 import { shareKeeps, validateShareMsg, type SharePlace } from '../shared/screen-share';
-import { cleanStatus, expireStatus } from '../shared/status';
+import { blocksConversations, cleanStatus, devicesOff, shownStatus, STATUS_PRESETS, statusId, timeLeftText } from '../shared/status';
 import { handleApi, type ApiContext } from './api';
 import { LayoutStore } from './layout-store';
 import { ObjectsStore } from './objects';
@@ -117,6 +117,8 @@ const PER_SECOND = {
   /** Office Arena controls and purchases; a shot is limited by its gear's fire rate instead. */
   arena: { count: 10 },
   fire: { count: 30 },
+  /** Status preferences. */
+  statusPrefs: { count: 4 },
 } satisfies Record<string, Limit>;
 
 const cleanLook = (l: unknown): Look => validateLook(l, DEFAULT_LOOK);
@@ -132,6 +134,12 @@ interface Conn {
   session: string;
   /** Office Arena speed check: the last place and time a move was measured from. */
   moveFrom: { x: number; y: number; at: number };
+  /** The status the member set (or Available). Automatic rules never change it; `p.status` is what everyone sees. */
+  chosen: PlayerStatus;
+  /** Show Available as In a meeting while in one (the member's setting). */
+  autoMeeting: boolean;
+  /** Whether the member is in a meeting right now, as of the last tick. */
+  inMeeting: boolean;
 }
 
 export function startServer(opts: ServerOptions): Promise<RunningServer> {
@@ -322,18 +330,47 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       context: positionContext(p.x, p.y, p.id, office.linkInput()),
       inConversation: links.conversationMembers(p.id).length > 0,
       atDesk: deskAt(p.x, p.y) !== null,
-      dnd: p.status.kind === 'dnd',
+      dnd: devicesOff(p.status),
     };
   };
-  // A status with a time limit goes back to available when it runs out.
+  /**
+   * Works out the status everyone sees for one connection (its chosen status, an expired one reverted, or an automatic
+   * In a meeting) and, when it changed, applies its effects and tells everyone. Never turns a device on.
+   */
+  const applyShown = (c: Conn, now: number) => {
+    const next = shownStatus(c.chosen, c.inMeeting, c.autoMeeting, now);
+    if (JSON.stringify(next) === JSON.stringify(c.p.status)) return;
+    c.p.status = next;
+    if (devicesOff(next)) {
+      if (c.p.mic || c.p.cam) {
+        c.p.mic = false;
+        c.p.cam = false;
+        broadcast({ t: 'presence', id: c.p.id, mic: false, cam: false });
+      }
+      if (shares.stop(c.p.id)) send(c.ws, { t: 'shareState', on: false, reason: next.kind === 'dnd' ? 'dnd' : 'status' });
+    }
+    broadcast({ t: 'presence', id: c.p.id, status: next });
+    if (office.deskOf(c.p.memberId)) broadcastOffice();
+  };
+  /** Connections of the same signed-in member (tabs). A guest is just themselves. */
+  const tabsOf = (c: Conn): Conn[] =>
+    c.p.memberId.startsWith('eph-') ? [c] : [...conns.values()].filter((o) => o.p.memberId === c.p.memberId);
   links.beforeUpdate = () => {
     const now = Date.now();
+    // In a meeting: sharing a screen, in a conversation of 3 or more, or in a private area with someone else.
+    // Contexts are counted once per tick so this stays linear in the number of players.
+    const contexts = new Map<string, string>();
+    const perArea = new Map<string, number>();
     for (const c of conns.values()) {
-      const next = expireStatus(c.p.status, now);
-      if (next === c.p.status) continue;
-      c.p.status = next;
-      broadcast({ t: 'presence', id: c.p.id, status: next });
-      if (office.deskOf(c.p.memberId)) broadcastOffice();
+      const ctx = positionContext(c.p.x, c.p.y, c.p.id, office.linkInput());
+      contexts.set(c.p.id, ctx);
+      if (ctx.startsWith('area:')) perArea.set(ctx, (perArea.get(ctx) ?? 0) + 1);
+    }
+    for (const c of conns.values()) {
+      const ctx = contexts.get(c.p.id)!;
+      c.inMeeting =
+        shares.has(c.p.id) || links.conversationMembers(c.p.id).length >= 3 || (ctx.startsWith('area:') && (perArea.get(ctx) ?? 0) > 1);
+      applyShown(c, now);
     }
     // A share ends when its sharer's place no longer keeps it; only the sharer is told.
     for (const { sharer, reason } of shares.sweep(placeOf)) sendTo(sharer, { t: 'shareState', on: false, reason });
@@ -507,6 +544,14 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     return rev;
   }
 
+  /** Tells the sender of a ring or wave when the target's status keeps conversations away ("Sam is at lunch · back at 1"). */
+  function tellAway(ws: WebSocket, target: Conn) {
+    const st = target.p.status;
+    if (!blocksConversations(st)) return;
+    const text = [`${target.p.name} ${STATUS_PRESETS[statusId(st)].phrase}`, st.text, timeLeftText(st, Date.now())].filter(Boolean).join(' · ');
+    send(ws, { t: 'notify', kind: 'awayInfo', from: target.p.id, text });
+  }
+
   function handle(ws: WebSocket, msg: ClientMsg, rawLength: number) {
     const conn = conns.get(ws);
 
@@ -535,7 +580,17 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         isAdmin: !!opts.adminToken && typeof msg.admin === 'string' && msg.admin === opts.adminToken,
         session: crypto.randomBytes(16).toString('hex'),
         moveFrom: { x: p.x, y: p.y, at: Date.now() },
+        chosen: { kind: 'available' },
+        autoMeeting: true,
+        inMeeting: false,
       };
+      // A second tab of the same member starts with the status they chose in the first.
+      const otherTab = p.memberId.startsWith('eph-') ? undefined : [...conns.values()].find((o) => o.p.memberId === p.memberId);
+      if (otherTab) {
+        c.chosen = otherTab.chosen;
+        c.autoMeeting = otherTab.autoMeeting;
+        p.status = shownStatus(c.chosen, false, c.autoMeeting, Date.now());
+      }
       conns.set(ws, c);
       office.saveCharacter(p.memberId, p.avatar);
       byId.set(p.id, c);
@@ -561,6 +616,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       });
       sendAdminState(c);
       // Someone who lost their desk when the office was redesigned or updated hears about it once, on their first join.
+      if (otherTab) send(ws, { t: 'presence', id: p.id, status: p.status });
       const deskNotice = office.takeDeskNotice(p.memberId);
       if (deskNotice) send(ws, { t: 'notify', kind: deskNotice === 'reset' ? 'deskReset' : 'deskRemoved', ...(deskNotice === 'removed' ? { text: REMOVED_TEXT(p.memberId) } : {}) });
       broadcast({ t: 'join', player: p }, ws);
@@ -766,10 +822,10 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         broadcast({ t: 'chat', id: me.id, name: me.name, text, zone: null, scope: 'office' });
       }
     } else if (msg.t === 'media') {
-      // Do Not Disturb keeps mic and camera off, even if a client asks otherwise.
-      const dnd = me.status.kind === 'dnd';
-      me.mic = !!msg.mic && !dnd;
-      me.cam = !!msg.cam && !dnd;
+      // Do Not Disturb and the away statuses keep mic and camera off, even if a client asks otherwise.
+      const off = devicesOff(me.status);
+      me.mic = !!msg.mic && !off;
+      me.cam = !!msg.cam && !off;
       if (msg.speaking !== undefined) {
         links.noteSpeaking(me.id, !!msg.speaking);
         links.update();
@@ -781,17 +837,23 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         send(ws, { t: 'notify', kind: 'error', text: 'That status is not valid, or has already run out.' });
         return;
       }
-      me.status = next;
-      // Do Not Disturb means no mic, no camera and no calls: enforce it here, whatever the client does.
-      if (next.kind === 'dnd') {
-        me.mic = false;
-        me.cam = false;
-        broadcast({ t: 'presence', id: me.id, mic: false, cam: false });
-        if (shares.stop(me.id)) send(ws, { t: 'shareState', on: false, reason: 'dnd' });
+      // A tab that reconnects re-sends what it remembers; another tab may have changed it since, so that one wins.
+      const sibling = msg.resume === true ? tabsOf(conn).find((o) => o !== conn) : undefined;
+      const now = Date.now();
+      if (sibling) {
+        conn.chosen = sibling.chosen;
+        applyShown(conn, now);
+      } else {
+        // One member, one status: every tab of a signed-in member takes it.
+        for (const tab of tabsOf(conn)) {
+          tab.chosen = next;
+          applyShown(tab, now);
+        }
       }
-      broadcast({ t: 'presence', id: me.id, status: next });
-      if (office.deskOf(me.memberId)) broadcastOffice();
       links.update();
+    } else if (msg.t === 'statusPrefs') {
+      if (typeof msg.autoMeeting !== 'boolean' || !within('statusPrefs', me.id)) return;
+      for (const tab of tabsOf(conn)) tab.autoMeeting = msg.autoMeeting;
     } else if (msg.t === 'ring') {
       const target = typeof msg.to === 'string' ? byId.get(msg.to) : undefined;
       const key = `${me.id}>${msg.to}`;
@@ -800,6 +862,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (Date.now() - (rings.get(key) ?? 0) < RING_COOLDOWN_MS) return fail('Give them a moment before ringing again.');
       rings.set(key, Date.now());
       sendTo(target.p.id, { t: 'notify', kind: 'ring', from: me.id, text: me.name });
+      tellAway(ws, target);
     } else if (msg.t === 'ringReply') {
       const ringer = typeof msg.from === 'string' ? byId.get(msg.from) : undefined;
       const key = `${msg.from}>${me.id}`;
@@ -831,6 +894,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (!target || target.p.id === me.id || Date.now() - (lastWave.get(key) ?? 0) < WAVE_COOLDOWN_MS) return;
       lastWave.set(key, Date.now());
       sendTo(target.p.id, { t: 'notify', kind: 'wave', from: me.id, text: me.name, reply: !!msg.reply });
+      tellAway(ws, target);
     } else if (msg.t === 'avatar') {
       // Each change is a broadcast and a save: past a few a second the rest are dropped.
       if (!within('avatar', me.id)) return;
@@ -853,7 +917,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         links.update();
         return;
       }
-      if (me.status.kind === 'dnd') return void send(ws, { t: 'shareState', on: false, reason: 'dnd' });
+      if (devicesOff(me.status)) return void send(ws, { t: 'shareState', on: false, reason: me.status.kind === 'dnd' ? 'dnd' : 'status' });
       if (arena.isPlayer(me.id)) {
         send(ws, { t: 'notify', kind: 'error', text: MATCH_REFUSED });
         return void send(ws, { t: 'shareState', on: false, reason: 'arena' });

@@ -1,10 +1,14 @@
+import type { PlayerStatus } from '../shared/protocol';
+import { statusId } from '../shared/status';
 import { icon } from './icons';
+import { statusBadge } from './status-badge';
 /** One person in the conversation panel. */
 export interface TileInfo {
   id: string;
   name: string;
   mic: boolean;
   cam: boolean;
+  status?: PlayerStatus;
   /** Shown when the camera is off. */
   avatar: HTMLCanvasElement | undefined;
   /** The person's video, when they have it on. */
@@ -227,6 +231,7 @@ export class CallPanel {
     tile.mark.hidden = !info.sharing;
     tile.controls?.mic.classList.toggle('off', !info.mic);
     tile.controls?.cam.classList.toggle('off', !info.cam);
-    tile.who.textContent = `${info.mic ? '' : '🔇 '}${info.name}${info.self ? ' (you)' : ''}`;
+    const label = `${info.mic ? '' : '🔇 '}${info.name}${info.self ? ' (you)' : ''}`;
+    tile.who.replaceChildren(...(info.status && statusId(info.status) !== 'available' ? [statusBadge(info.status), document.createTextNode(' ')] : []), document.createTextNode(label));
   }
 }

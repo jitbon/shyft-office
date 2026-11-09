@@ -1,4 +1,5 @@
 import type { AvatarChoice, Look, PlayerStatus, ViewMode } from '../shared/protocol';
+import { STATUS_PRESETS, statusId } from '../shared/status';
 import type { Avatar } from './art';
 
 export interface Player {
@@ -28,13 +29,8 @@ export interface Player {
   jumpAt?: number;
 }
 
-export const STATUS_COLORS: Record<PlayerStatus['kind'], string> = {
-  available: '#5cb85c',
-  busy: '#f1c453',
-  dnd: '#e04f5f',
-};
 /** Someone who is not connected has no status, so their dot is grey. */
 export const OFFLINE_COLOR = '#6b7088';
-export const statusColor = (s: Pick<PlayerStatus, 'kind'>) => STATUS_COLORS[s.kind];
+export const statusColor = (s: Pick<PlayerStatus, 'kind' | 'preset'>) => STATUS_PRESETS[statusId(s)].color;
 
 export const walkFrame = (p: Player) => (p.moving ? Math.floor(p.animT * 8) % 4 : 0);

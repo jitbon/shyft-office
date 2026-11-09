@@ -17,6 +17,7 @@ import { themeById } from '../shared/themes';
 import { withPalette } from './art';
 import { paletteFor } from './palette';
 import { hopHeight } from '../shared/jump';
+import { DIM_ALPHA, dims } from '../shared/status';
 import { horizonRow } from './look';
 import { walkFrame, type Player } from './types';
 
@@ -43,6 +44,12 @@ export interface Label {
   x: number;
   y: number;
   player: Player;
+}
+
+/** `top` laid over `under` at `alpha` (both packed ABGR pixels); the result is opaque. */
+function fade(under: number, top: number, alpha: number): number {
+  const mixc = (shift: number) => Math.round(((top >>> shift) & 255) * alpha + ((under >>> shift) & 255) * (1 - alpha));
+  return ((255 << 24) | (mixc(16) << 16) | (mixc(8) << 8) | mixc(0)) >>> 0;
 }
 
 /** Which side of a remote avatar faces the camera. */
@@ -312,13 +319,14 @@ export class Raycaster {
       const y0 = Math.max(0, Math.floor(top)), y1 = Math.min(h, Math.ceil(bottom));
       const { tex } = s.art;
       const f = fog(tY);
+      const faint = !!s.player && dims(s.player.status);
       for (let x = x0; x < x1; x++) {
         const tx = Math.min(tex.w - 1, Math.floor(((x - left) * tex.w) / sw));
         for (let y = y0; y < y1; y++) {
           if (tY >= depth[y * w + x]) continue;
           const ty = Math.min(tex.h - 1, Math.floor(((y - top) * tex.h) / sh));
           const c = tex.data[ty * tex.w + tx];
-          if (c >>> 24 > 127) pix[y * w + x] = lit(c, f);
+          if (c >>> 24 > 127) pix[y * w + x] = faint ? fade(pix[y * w + x], lit(c, f), DIM_ALPHA) : lit(c, f);
         }
       }
       if (s.player) {

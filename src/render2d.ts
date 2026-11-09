@@ -13,6 +13,9 @@ import { outlineEdges } from '../shared/desk-presence';
 import { hopHeight } from '../shared/jump';
 import type { DeskTag } from './office-ui';
 import { statusColor, walkFrame, type Player } from './types';
+import { DIM_ALPHA, blocksConversations, dims, statusIcon, statusLabel } from '../shared/status';
+import { TALK_RANGE } from '../shared/proximity';
+import type { PlayerStatus } from '../shared/protocol';
 
 export const UI_FONT = '"Nunito", system-ui, sans-serif';
 
@@ -232,12 +235,20 @@ function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
   else ctx.rect(x, y, w, h);
 }
 
+type StatusLike = Pick<PlayerStatus, 'kind' | 'preset' | 'emoji'>;
+
 /**
  * Draws a name tag as a pill and returns its top edge. `size` is the old label size: the text is drawn at
  * about three quarters of it but never below 14 CSS px, which reads as large as the old pixel font did.
- * `dot` adds a small status circle before the name.
+ * `dotOrStatus` adds a small status circle before the name: a color, or a status (which also adds its icon).
  */
-export function drawNameTag(ctx: CanvasRenderingContext2D, text: string, cx: number, bottom: number, size = 18, dot?: string) {
+export function drawNameTag(ctx: CanvasRenderingContext2D, text: string, cx: number, bottom: number, size = 18, dotOrStatus?: string | StatusLike) {
+  // A status draws its color dot and, unless Available, its icon before the name.
+  const dot = typeof dotOrStatus === 'string' ? dotOrStatus : dotOrStatus && statusColor(dotOrStatus);
+  if (dotOrStatus && typeof dotOrStatus !== 'string') {
+    const icon = statusIcon(dotOrStatus);
+    if (icon) text = `${icon} ${text}`;
+  }
   const px = Math.max(14, Math.round(size * 0.78));
   ctx.font = `700 ${px}px ${UI_FONT}`;
   const d = Math.round(px * 0.55);
@@ -259,6 +270,28 @@ export function drawNameTag(ctx: CanvasRenderingContext2D, text: string, cx: num
   ctx.textBaseline = 'middle';
   ctx.fillText(text, cx + dotW / 2, y + h / 2 + 1);
   return y;
+}
+
+/**
+ * A small line under a name tag saying why no conversation opens with this person ("Focusing", "At lunch").
+ * `tagBottom` is the tag's bottom edge.
+ */
+export function drawWhyNot(ctx: CanvasRenderingContext2D, text: string, cx: number, tagBottom: number) {
+  ctx.font = `600 12px ${UI_FONT}`;
+  const w = Math.ceil(ctx.measureText(text).width) + 12;
+  ctx.fillStyle = 'rgba(20, 22, 40, 0.72)';
+  roundedRect(ctx, Math.round(cx - w / 2), Math.round(tagBottom + 2), w, 16, 8);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, cx, Math.round(tagBottom + 11));
+}
+
+/** The label for someone whose status keeps conversations away, when `me` is close enough that one would have opened. */
+export function whyNotText(me: { x: number; y: number }, p: { x: number; y: number; status: PlayerStatus }): string | null {
+  if (!blocksConversations(p.status) || Math.hypot(p.x - me.x, p.y - me.y) > TALK_RANGE) return null;
+  return p.status.preset === 'lunch' ? 'At lunch' : p.status.preset === 'coffee' ? 'On a coffee break' : statusLabel(p.status);
 }
 
 export function drawBubble(ctx: CanvasRenderingContext2D, text: string, cx: number, bottom: number) {
@@ -503,7 +536,10 @@ export class Renderer2D {
       ctx.fill();
       // A frame is TILE px square with the feet two art pixels below the position, centred.
       const img = p.avatar.frames[dirFromAngle(p.a)][walkFrame(p)];
+      // Someone away is drawn faded, so the room reads as "not here" at a glance.
+      if (dims(p.status)) ctx.globalAlpha = DIM_ALPHA;
       ctx.drawImage(img, Math.round(fx - (TILE / 2) * k), Math.round(fy - lift - (TILE - 2) * k), TILE * k, TILE * k);
+      ctx.globalAlpha = 1;
     }
 
     if (this.arena) this.drawArenaFx(ctx, ox, oy, s, k);
@@ -545,8 +581,10 @@ export class Renderer2D {
 
     for (const p of sorted) {
       const fx = ox + p.x * s, fy = oy + p.y * s - hopHeight(p.jumpAt, clock) * s;
-      const top = drawNameTag(ctx, p.name, fx / dpr, (fy - (TILE - 2) * k) / dpr - 2, 18, statusColor(p.status));
+      const top = drawNameTag(ctx, p.name, fx / dpr, (fy - (TILE - 2) * k) / dpr - 2, 18, p.status);
       if (p.bubble && p.bubble.until > now) drawBubble(ctx, p.bubble.text, fx / dpr, top);
+      const why = p === me ? null : whyNotText(me, p);
+      if (why) drawWhyNot(ctx, why, fx / dpr, top + Math.max(14, Math.round(18 * 0.78)) + 8);
     }
     ctx.restore();
   }

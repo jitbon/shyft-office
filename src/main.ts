@@ -5,7 +5,7 @@ import { RUN_MULT, WALK_SPEED } from '../shared/movement';
 import type {
   AvatarChoice, ChatScope, ClientMsg, ConversationInfo, ItemInfo, Link, PlayerState, PlayerStatus, ServerMsg, ViewMode,
 } from '../shared/protocol';
-import { expireStatus } from '../shared/status';
+import { devicesOff, expireStatus, statusIcon, statusId, statusLabel, timeLeftText } from '../shared/status';
 import { CATALOG } from '../shared/wardrobe';
 import { loadAvatar, makeAvatar } from './art';
 import { Builder } from './builder/builder';
@@ -20,11 +20,12 @@ import {
 } from './office-ui';
 import { Net } from './net';
 import { session } from './session';
-import { Renderer2D, drawBubble, drawNameTag, type Arena2D } from './render2d';
+import { Renderer2D, drawBubble, drawNameTag, drawWhyNot, whyNotText, type Arena2D } from './render2d';
 import { Raycaster, type Fx3D } from './render3d';
 import { defaultZoom, rescale, stepZoom } from './scale';
-import { handleSocialNotify, initStatus, refreshStatusUi } from './status';
-import { statusColor, type Player } from './types';
+import { handleSocialNotify, initStatus, refreshStatusUi, statusPrefs } from './status';
+import type { Player } from './types';
+import { statusBadge } from './status-badge';
 import { updateCustomObjects } from './custom-objects';
 import { deskCueText, deskPresenceNow, roomViewNow } from './desk-presence';
 import { icon } from './icons';
@@ -342,6 +343,7 @@ canvas.addEventListener('click', (e) => {
   if (mode === '3d') {
     if (document.pointerLockElement !== canvas) canvas.requestPointerLock();
     else if (arena.spectating()) arena.nextSpectate();
+    else if (!arena.inMatch() && clickPlayerCard3d()) return;
     else arena.fire(me.a);
     return;
   }
@@ -356,11 +358,78 @@ canvas.addEventListener('mousemove', (e) => {
   const t = renderer2d.tileUnder(e.clientX, e.clientY);
   hoverDesk = deskAt(t.x + 0.5, t.y + 0.5)?.id ?? null;
   canvas.style.cursor = hoverDesk ? 'pointer' : '';
+  showPlayerCard(e.clientX, e.clientY);
 });
+canvas.addEventListener('mouseleave', () => showPlayerCard(null, null));
+
+/** Fills the person card: name, status icon and label, note and time left. */
+function fillPlayerCard(card: HTMLElement, who: Player) {
+  const st = who.status;
+  const note = [st.text, timeLeftText(st, Date.now())].filter(Boolean).join(' · ');
+  card.replaceChildren(
+    Object.assign(document.createElement('b'), { textContent: who.name }),
+    Object.assign(document.createElement('div'), { textContent: `${statusIcon(st)} ${statusLabel(st)}`.trim() }),
+    ...(note ? [Object.assign(document.createElement('div'), { className: 'sys', textContent: note })] : []),
+  );
+}
+
+let card3dTimer = 0;
+/** Where we faced when the first-person card appeared; turning away from it hides the card. */
+let card3dAngle = 0;
+/** First person: a click (outside a match) shows the card of the person nearest the crosshair. Returns whether it handled the click. */
+function clickPlayerCard3d(): boolean {
+  const card = $('playerCard');
+  window.clearTimeout(card3dTimer);
+  if (!card.hidden) {
+    card.hidden = true;
+    return true;
+  }
+  const cx = canvas.clientWidth / 2;
+  let best: { p: Player; d: number } | undefined;
+  for (const l of lastLabels3d) {
+    const d = Math.abs(l.x - cx);
+    if (l.player !== me && d < canvas.clientWidth * 0.12 && (!best || d < best.d)) best = { p: l.player, d };
+  }
+  if (!best) return false;
+  fillPlayerCard(card, best.p);
+  card.style.left = `${Math.min(cx + 14, window.innerWidth - 220)}px`;
+  card.style.top = `${canvas.clientHeight / 2 + 14}px`;
+  card.hidden = false;
+  card3dAngle = me.a;
+  card3dTimer = window.setTimeout(() => (card.hidden = true), 4000);
+  return true;
+}
+let lastLabels3d: { x: number; player: Player }[] = [];
+
+/** The card shown when the pointer is over another person: their name, status, note and time left. */
+function showPlayerCard(clientX: number | null, clientY: number | null) {
+  const card = $('playerCard');
+  let who: Player | undefined;
+  if (clientX !== null && clientY !== null) {
+    const at = renderer2d.tileUnder(clientX, clientY);
+    const [px, py] = [at.x + 0.5, at.y + 0.5];
+    // The pointer is on a person when it is within about 0.6 tile of their feet (a bit more above them, where the body is).
+    const hit = (p: Player) => Math.abs(p.x - px) < 0.6 && p.y - py > -0.6 && p.y - py < 1.2;
+    who = [...others.values()].find(hit);
+  }
+  if (!who || clientX === null || clientY === null) {
+    card.hidden = true;
+    return;
+  }
+  fillPlayerCard(card, who);
+  card.style.left = `${Math.min(clientX + 14, window.innerWidth - 220)}px`;
+  card.style.top = `${clientY + 14}px`;
+  card.hidden = false;
+}
 document.addEventListener('mousemove', (e) => {
   if (mode === '3d' && document.pointerLockElement === canvas) {
     me.a += e.movementX * MOUSE_SENS;
     pitch = mouseLook(pitch, e.movementY, invertLook, MOUSE_SENS);
+    const card = $('playerCard');
+    if (!card.hidden && Math.abs(Math.atan2(Math.sin(me.a - card3dAngle), Math.cos(me.a - card3dAngle))) > (5 * Math.PI) / 180) {
+      card.hidden = true;
+      window.clearTimeout(card3dTimer);
+    }
   }
 });
 const invertBox = $('invertLook') as HTMLInputElement;
@@ -464,15 +533,50 @@ let wantMic = false;
 let wantCam = false;
 let devicesQueue: Promise<void> = Promise.resolve();
 
-/** Takes a new status of ours into effect: Do Not Disturb switches the mic and camera off and locks their buttons. */
-function setMyStatus(status: PlayerStatus) {
+/** The status we chose (not an automatic In a meeting): what a reconnect says again. */
+let myChosen: PlayerStatus = { kind: 'available' };
+/** The devices we had on when a status turned them off, so choosing a new status can bring them back. */
+let savedMic = false;
+let savedCam = false;
+
+/**
+ * Takes a new status of ours into effect. A status that turns devices off (Do Not Disturb, the away ones) switches the mic and
+ * camera off and locks their buttons. When it ends, devices come back only if we picked the new status ourselves (`byMe`);
+ * if it ran out or changed elsewhere they stay off and we are asked (Constitution III).
+ */
+function setMyStatus(status: PlayerStatus, opts: { byMe?: boolean } = {}) {
+  const wasOff = devicesOff(me.status);
+  const isOff = devicesOff(status);
   me.status = status;
-  const dnd = status.kind === 'dnd';
-  micBtn.disabled = camBtn.disabled = dnd;
-  if (dnd && (wantMic || wantCam)) {
-    wantMic = false;
-    wantCam = false;
-    devicesQueue = devicesQueue.then(applyDevices);
+  if (!status.auto) myChosen = status;
+  micBtn.disabled = camBtn.disabled = isOff;
+  if (isOff && !wasOff) {
+    savedMic = wantMic;
+    savedCam = wantCam;
+    if (wantMic || wantCam) {
+      wantMic = false;
+      wantCam = false;
+      devicesQueue = devicesQueue.then(applyDevices);
+    }
+    if (status.kind !== 'dnd') notice("Your mic and camera are off while you're away.", { key: 'status-devices', ttlMs: 4500 });
+  } else if (!isOff && wasOff && (savedMic || savedCam)) {
+    const [mic, cam] = [savedMic, savedCam];
+    savedMic = savedCam = false;
+    const restore = () => {
+      wantMic = mic;
+      wantCam = cam;
+      devicesQueue = devicesQueue.then(applyDevices);
+    };
+    if (opts.byMe) restore();
+    else {
+      notice('Your status ended. Turn your mic and camera back on?', {
+        key: 'status-devices',
+        ttlMs: 15_000,
+        buttons: [{ label: 'Turn back on', onClick: restore }, { label: 'Dismiss', onClick: () => {} }],
+      });
+    }
+  } else if (!isOff && wasOff) {
+    savedMic = savedCam = false;
   }
   refreshStatusUi();
   lastPeopleKey = ''; // redraw the list with the new dot
@@ -502,8 +606,8 @@ function flushSpeaking() {
 
 /** Flips the wanted state right away, then applies changes one at a time so quick toggles never act on stale state. */
 function toggleDevice(which: 'mic' | 'cam') {
-  if (me.status.kind === 'dnd') {
-    notice('You are in Do Not Disturb, so your mic and camera stay off.', { key: 'dnd-devices', ttlMs: 2500 });
+  if (devicesOff(me.status)) {
+    notice(me.status.kind === 'dnd' ? 'You are in Do Not Disturb, so your mic and camera stay off.' : "You're away, so your mic and camera stay off.", { key: 'dnd-devices', ttlMs: 2500 });
     return;
   }
   if (which === 'mic') wantMic = !wantMic;
@@ -571,7 +675,7 @@ let roomView: string | null = null;
 
 /** Your own tile: the same in the conversation and at your desk. */
 function selfTile(): TileInfo {
-  return { id: me.id, name: me.name, mic: me.mic, cam: me.cam, avatar: me.avatar.frames.down[0], stream: media.localVideo(), self: true, talking: media.selfTalking() };
+  return { id: me.id, name: me.name, mic: me.mic, cam: me.cam, avatar: me.avatar.frames.down[0], status: me.status, stream: media.localVideo(), self: true, talking: media.selfTalking() };
 }
 
 function refreshCallPanel() {
@@ -597,7 +701,7 @@ function refreshCallPanel() {
     // In big meetings only some people send video, so everyone else shows as an avatar.
     const sendsVideo = !conversation.video || conversation.video.includes(p.id);
     tiles.push({
-      id: p.id, name: p.name, mic: p.mic, cam: p.cam && sendsVideo,
+      id: p.id, name: p.name, mic: p.mic, cam: p.cam && sendsVideo, status: p.status,
       avatar: p.avatar.frames.down[0],
       stream: self ? media.localVideo() : streams.get(p.id) ?? null,
       self,
@@ -795,9 +899,10 @@ function onMessage(msg: ServerMsg) {
       media.setIceServers(session.ice);
       {
         // After a reconnect the server has forgotten our status: say it again, unless it has run out.
-        const mine = expireStatus(me.status, Date.now());
+        const mine = expireStatus(myChosen, Date.now());
         setMyStatus(mine);
-        if (mine.kind !== 'available' || mine.text) net.send({ t: 'status', ...mine });
+        if (mine.kind !== 'available' || mine.text) net.send({ t: 'status', ...mine, resume: true });
+        net.send({ t: 'statusPrefs', autoMeeting: statusPrefs().autoMeeting });
       }
       if (msg.office) setOffice(msg.office);
       onWelcome();
@@ -1025,6 +1130,7 @@ function onChat(id: string, name: string, text: string, zone: string | null, sco
   const who = document.createElement('b');
   who.textContent = name;
   who.style.color = p?.look.shirt ?? '#fff';
+  if (p && statusId(p.status) !== 'available') line.append(statusBadge(p.status));
   line.append(who, document.createTextNode(` ${text}`));
   if (zone) line.prepend(Object.assign(document.createElement('span'), { className: 'tag', textContent: '🔒' }));
   else if (scope === 'nearby') line.prepend(Object.assign(document.createElement('span'), { className: 'tag', textContent: '👥' }));
@@ -1050,7 +1156,7 @@ function renderPeople() {
   const near = new Set(
     list.filter((p) => p !== me && Math.hypot(p.x - me.x, p.y - me.y) < NEARBY_RADIUS).map((p) => p.id),
   );
-  const key = list.map((p) => `${p.id}${p.name}${p.mode}${near.has(p.id)}${p.status.kind}${p.status.text ?? ''}`).join('|') + online;
+  const key = list.map((p) => `${p.id}${p.name}${p.mode}${near.has(p.id)}${p.status.kind}${p.status.preset ?? ''}${p.status.emoji ?? ''}${p.status.until === undefined ? '' : Math.ceil((p.status.until - Date.now()) / 60_000)}${p.status.text ?? ''}`).join('|') + online;
   if (key === lastPeopleKey) return;
   lastPeopleKey = key;
 
@@ -1065,12 +1171,12 @@ function renderPeople() {
     row.className = 'person' + (near.has(p.id) ? ' near' : '');
     const dot = Object.assign(document.createElement('i'), {});
     dot.style.background = p.look.shirt;
-    const state = Object.assign(document.createElement('i'), { className: 'st', title: p.status.kind === 'dnd' ? 'Do Not Disturb' : p.status.kind });
-    state.style.background = statusColor(p.status);
+    const state = statusBadge(p.status);
     const label = document.createTextNode(p === me ? `${p.name} (you)` : p.name);
     row.append(dot, state, label);
     if (p.mode === '3d') row.append(Object.assign(document.createElement('span'), { className: 'tag', textContent: '1P' }));
-    if (p.status.text) row.append(Object.assign(document.createElement('span'), { className: 'what', textContent: p.status.text, title: p.status.text }));
+    const what = [p.status.text, timeLeftText(p.status, Date.now())].filter(Boolean).join(' · ');
+    if (what) row.append(Object.assign(document.createElement('span'), { className: 'what', textContent: what, title: what }));
     if (p !== me && online) {
       const acts = document.createElement('span');
       acts.className = 'acts';
@@ -1281,8 +1387,11 @@ function render(now: number) {
     ctx.scale(dpr, dpr);
     const sx = w / dpr / raycaster.w, sy = h / dpr / raycaster.h;
     for (const m of raycaster.markerLabels) drawNameTag(ctx, m.text, m.x * sx, m.y * sy, 16, m.dot);
+    lastLabels3d = labels.map((l) => ({ x: l.x * sx, player: l.player }));
     for (const l of labels) {
-      const top = drawNameTag(ctx, l.player.name, l.x * sx, l.y * sy - 4, 18, statusColor(l.player.status));
+      const top = drawNameTag(ctx, l.player.name, l.x * sx, l.y * sy - 4, 18, l.player.status);
+      const why = l.player === me ? null : whyNotText(me, l.player);
+      if (why) drawWhyNot(ctx, why, l.x * sx, top + Math.max(14, Math.round(18 * 0.78)) + 8);
       if (l.player.bubble && l.player.bubble.until > now) drawBubble(ctx, l.player.bubble.text, l.x * sx, top);
       // A small marker in the team's colour over the heads of match players.
       const team = arena.teamOf(l.player.id);
@@ -1393,7 +1502,7 @@ async function start() {
     speakingWanted = speaking;
     flushSpeaking();
   };
-  initStatus({ send: (m) => net.send(m), current: () => me.status, apply: setMyStatus });
+  initStatus({ send: (m) => net.send(m), current: () => me.status, apply: setMyStatus, statusOf: (id) => others.get(id)?.status });
   initOfficeUi({
     send: (m) => net.send(m),
     people: () => [me, ...others.values()].map((p) => ({ memberId: p.memberId, name: p.name })),

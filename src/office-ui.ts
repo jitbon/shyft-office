@@ -4,6 +4,8 @@ import { deskViewOn, setDeskViewOn } from './desk-presence';
 import { session } from './session';
 import { helperStatus, onHelperStatus } from './studio/helper-ui';
 import { OFFLINE_COLOR, statusColor } from './types';
+import { statusBadge } from './status-badge';
+import { statusIcon, timeLeftText } from '../shared/status';
 
 /** The few things this module needs from the rest of the client. */
 export interface OfficeUiDeps {
@@ -205,6 +207,8 @@ interface NoticeOpts {
   key?: string;
   ttlMs?: number;
   buttons?: { label: string; onClick: () => void }[];
+  /** Shown before the text, e.g. a status badge. */
+  lead?: HTMLElement;
 }
 
 export function notice(text: string, opts: NoticeOpts = {}) {
@@ -213,7 +217,9 @@ export function notice(text: string, opts: NoticeOpts = {}) {
   const el = document.createElement('div');
   el.className = 'notice';
   if (opts.key) el.dataset.key = opts.key;
-  el.append(Object.assign(document.createElement('span'), { textContent: text }));
+  const span = Object.assign(document.createElement('span'), { textContent: text });
+  if (opts.lead) span.prepend(opts.lead);
+  el.append(span);
   for (const b of opts.buttons ?? []) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -267,7 +273,7 @@ export function deskTags(hover: string | null): DeskTag[] {
     return [{
       tiles: desk.tiles,
       anchor: surface(s.id),
-      text: `${s.locked ? '🔒 ' : ''}${s.owner.name}${s.owner.online ? '' : ' (away)'}${status?.text ? ` · ${status.text}` : ''}`,
+      text: `${s.locked ? '🔒 ' : ''}${status ? statusIcon(status) : ''}${status && statusIcon(status) ? ' ' : ''}${s.owner.name}${s.owner.online ? '' : ' (offline)'}${status?.text ? ` · ${status.text}` : ''}`,
       dot: status ? statusColor(status) : OFFLINE_COLOR,
       // Your own name is already over your head, so your own desk only labels itself on hover.
       show: hover === s.id || (near && s.owner.memberId !== me.memberId),
@@ -362,6 +368,11 @@ export function closeDeskCard() {
 }
 
 export const deskCardOpen = () => cardDesk !== null;
+// A running time limit counts down on an open desk card.
+window.setInterval(() => {
+  const st = cardDesk ? office?.desks.find((d) => d.id === cardDesk)?.owner?.status : undefined;
+  if (st?.until !== undefined) renderDeskCard();
+}, 60_000);
 
 function renderDeskCard() {
   const card = $('deskCard');
@@ -386,10 +397,10 @@ function renderDeskCard() {
   if (!state?.owner) {
     line.textContent = 'This desk is free.';
   } else {
-    const dot = document.createElement('i');
-    dot.className = `dot ${state.owner.status?.kind ?? 'available'}`;
-    line.append(dot, document.createTextNode(`${state.owner.name}${mine ? ' (you)' : ''}${state.owner.online ? '' : ' · away'}`));
-    if (state.owner.status?.text) line.append(Object.assign(document.createElement('div'), { className: 'sys', textContent: state.owner.status.text }));
+    const dot = state.owner.status ? statusBadge(state.owner.status) : Object.assign(document.createElement('i'), { className: 'dot' });
+    line.append(dot, document.createTextNode(`${state.owner.name}${mine ? ' (you)' : ''}${state.owner.online ? '' : ' · offline'}`));
+    const ownerNote = state.owner.online && state.owner.status ? [state.owner.status.text, timeLeftText(state.owner.status, Date.now())].filter(Boolean).join(' · ') : '';
+    if (ownerNote) line.append(Object.assign(document.createElement('div'), { className: 'sys', textContent: ownerNote }));
     if (state.locked) line.append(Object.assign(document.createElement('div'), { className: 'sys', textContent: '🔒 Locked: only invited people can join.' }));
   }
   card.append(line);

@@ -64,6 +64,17 @@ describe('open-floor links', () => {
     expect(r.conversations[0].members).toEqual(['a', 'c']);
   });
 
+  it('gives a focusing or away player no links, but keeps meeting and busy ones', () => {
+    const withB = (status: LinkPlayer['status']) => computeLinks([player('a', 15.5, Y), { id: 'b', x: 16.5, y: Y, status }, player('c', 17.5, Y)]);
+    for (const preset of ['focus', 'lunch'] as const) {
+      const r = withB({ kind: 'busy', preset });
+      expect(r.links.every((l) => l.a !== 'b' && l.b !== 'b'), preset).toBe(true);
+    }
+    for (const status of [{ kind: 'busy', preset: 'meeting' }, { kind: 'busy' }] as const) {
+      expect(withB(status).conversations[0].members).toEqual(['a', 'b', 'c']);
+    }
+  });
+
   it('moves members past the cap to overflow', () => {
     const crowd = Array.from({ length: MAX_OPEN + 1 }, (_, i) => player(`p${i}`, 15 + i * 0.2, Y));
     const r = computeLinks(crowd);

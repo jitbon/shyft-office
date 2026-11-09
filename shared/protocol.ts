@@ -46,10 +46,19 @@ export type AvatarChoice =
   | { kind: 'layers'; ids: Partial<Record<Layer, string>> };
 
 export type StatusKind = 'available' | 'busy' | 'dnd';
+/** Ready-made statuses beyond the three kinds; the server stores `kind: 'busy'` for each of them. */
+export type StatusPreset = 'meeting' | 'focus' | 'lunch' | 'coffee' | 'away' | 'out';
+/** The id of a status for display and effects: `preset ?? kind`. */
+export type StatusId = StatusKind | StatusPreset;
 
 export interface PlayerStatus {
   kind: StatusKind;
+  preset?: StatusPreset;
   text?: string;
+  /** One emoji that replaces the preset's icon. */
+  emoji?: string;
+  /** Set only by the server, on an automatic In a meeting. */
+  auto?: true;
   /** Epoch ms when the status reverts to available. */
   until?: number;
 }
@@ -133,7 +142,7 @@ export interface PlayerState extends Pose {
 export type ChatScope = 'office' | 'nearby' | 'area' | 'desk';
 
 export type NotifyKind =
-  | 'knock' | 'knockResult' | 'ring' | 'ringResult' | 'wave' | 'deskInvite' | 'deskReset' | 'deskRemoved' | 'error';
+  | 'knock' | 'knockResult' | 'ring' | 'ringResult' | 'wave' | 'deskInvite' | 'deskReset' | 'deskRemoved' | 'awayInfo' | 'error';
 
 export type AdminOp =
   | { op: 'podMode'; podId: string; mode: 'ambient' | 'cubicle' }
@@ -149,7 +158,8 @@ export type ClientMsg =
   | { t: 'chat'; text: string; to?: 'nearby' | 'office' }
   | { t: 'media'; mic: boolean; cam: boolean; speaking?: boolean }
   | { t: 'rtc'; to: string; data: unknown }
-  | ({ t: 'status' } & PlayerStatus)
+  | ({ t: 'status'; resume?: true } & PlayerStatus)
+  | { t: 'statusPrefs'; autoMeeting: boolean }
   | { t: 'avatar'; avatar: AvatarChoice }
   | { t: 'desk'; op: 'claim' | 'unclaim' | 'lock' | 'unlock'; deskId?: string }
   | { t: 'deskInvite'; memberId: string }
@@ -225,7 +235,7 @@ export type ServerMsg =
   | { t: 'links'; links: Link[]; conversation: ConversationInfo | null; full?: boolean }
   | { t: 'rtc'; from: string; data: unknown }
   /** Sent only to the sharer: the share started, or why it is not running. */
-  | { t: 'shareState'; on: boolean; shareId?: string; reason?: 'full' | 'dnd' | 'left' | 'stopped' | 'arena' }
+  | { t: 'shareState'; on: boolean; shareId?: string; reason?: 'full' | 'dnd' | 'left' | 'stopped' | 'arena' | 'status' }
   /** Someone's pen points on a share you can see. Relayed at once; the server keeps nothing. */
   | { t: 'ink'; from: string; shareId: string; strokeId: number; seq: number; pts: number[]; end?: true; keep?: true }
   | { t: 'inkClear'; from: string; shareId: string; scope: 'mine' | 'all' }

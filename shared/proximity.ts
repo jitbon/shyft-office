@@ -1,7 +1,8 @@
 // Who is connected to whom. Pure functions: the server runs them every tick to decide
 // conversations, and the client uses `gainFor` to set per-peer volume.
 import { areaAt, deskAt, isWall, tileAt } from './map';
-import type { LinkContext, LinkKind, StatusKind } from './protocol';
+import type { LinkContext, LinkKind, PlayerStatus } from './protocol';
+import { blocksConversations } from './status';
 
 /** Open-floor talking range, in tiles. */
 export const TALK_RANGE = 3;
@@ -18,7 +19,7 @@ export interface LinkPlayer {
   id: string;
   x: number;
   y: number;
-  status: { kind: StatusKind };
+  status: Pick<PlayerStatus, 'kind' | 'preset'>;
 }
 
 export interface PairLink {
@@ -115,7 +116,7 @@ export function positionContext(x: number, y: number, who?: string, office: Offi
 }
 
 function contextOf(p: LinkPlayer, office: OfficeInput): { context: LinkContext; label: string } | null {
-  if (p.status.kind === 'dnd') return null;
+  if (blocksConversations(p.status)) return null;
   const context = positionContext(p.x, p.y, p.id, office);
   if (context === 'open') return { context, label: 'Nearby' };
   if (context.startsWith('desk:')) return { context, label: office.deskLabels?.get(context.slice(5)) ?? 'Desk' };

@@ -49,10 +49,15 @@ other than localhost the browser will not allow the camera, though chat and walk
   others draw** to switch it off. Esc puts the pen down. The sharer draws through **Open** on their banner, which shows
   their own screen large in the app (a web page can't draw over the real desktop). Ink goes only to the people who see the
   share, and nothing is stored.
-- **Status.** Click **Status** for Available, Busy or Do Not Disturb, with an optional note and time limit.
-  **Ctrl+U** (**⌘+U** on a Mac) toggles Do Not Disturb: nobody can start a conversation with you, and your mic and
-  camera stay off. People can still **ring** you (accept and you land next to them) or **wave**: use the buttons
-  next to a name in the people list.
+- **Status.** Click **Status** and pick one of nine in one click (Recent shows your last three): Available, Busy, Do Not
+  Disturb, In a meeting, Focusing, Lunch, Coffee break, Away and Out for the day. **Customize** adds a note, an emoji and
+  a time limit. The icon shows over your head in both views, and Lunch, Coffee break, Away and Out for the day fade your
+  avatar. Do Not Disturb, Focusing and the four away statuses keep conversations from opening around you; Do Not Disturb
+  and the away ones also switch your mic and camera off and stop a screen share (they stay off when the status ends:
+  you are asked first). Available shows as **In a meeting** automatically while you share a screen, are in a conversation
+  of three or more, or are in a private room with someone (turn it off in the Status menu). Nothing ever sets Away by
+  itself. **Ctrl+U** (**⌘+U** on a Mac) toggles Do Not Disturb. People can still **ring** you (accept and you land
+  next to them) or **wave**: use the buttons next to a name in the people list. They are told when you are away.
 - **Office Arena.** Press **Arena** and **Start match** for a round-based team game played right in the office, in first
   person. Others press **Join** (from the Arena button or the banner everyone sees). Up to 10 can play, split into the
   Blue and Orange teams. The host presses **Begin** (it needs 2 players) and can **Stop** the match (everyone goes back

@@ -203,6 +203,25 @@ body:has(#viewToggle [data-mode='3d'].on) #statusPanel { top: 190px; }
 #statusPanel .kinds { display: flex; flex-direction: column; gap: 4px; }
 #statusPanel .kinds button { display: flex; align-items: center; text-align: left; }
 #statusBtn .dot { margin-right: 6px; }
+#statusPanel { max-height: calc(100vh - 80px); overflow-y: auto; }
+#statusPanel .kinds.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+#statusPanel .kinds.grid button { flex-direction: column; justify-content: center; text-align: center; padding: 6px 2px; font-size: 12px; gap: 2px; }
+#statusPanel .kinds.grid button .dot { margin: 0; }
+#statusPanel .kinds button.on { outline: 2px solid var(--accent); }
+#statusPanel .recent { display: flex; flex-direction: column; gap: 4px; }
+#statusPanel .recent button { display: flex; align-items: center; text-align: left; }
+#statusPanel .recent small { color: var(--muted); margin-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#statusPanel details { display: flex; flex-direction: column; gap: 6px; }
+#statusPanel details > summary { cursor: pointer; font: 700 13px/1.4 var(--font); margin-bottom: 6px; }
+#statusPanel .emoji-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; }
+#statusPanel .emoji-grid button { padding: 2px 0; font-size: 16px; }
+#statusPanel .auto-meeting { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+.status-badge {
+  display: inline-grid; place-items: center; width: 18px; height: 18px; margin-right: 6px; border-radius: 50%;
+  border: 2px solid var(--status, #5cb85c); font-size: 10px; font-style: normal; line-height: 1; vertical-align: middle; flex: none;
+}
+.status-badge.plain { width: 10px; height: 10px; border: 0; background: var(--status, #5cb85c); margin: 0 8px 0 4px; }
+#playerCard { position: fixed; z-index: 30; pointer-events: none; max-width: 210px; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
 
 .person .st { width: 8px; height: 8px; margin-left: -2px; }
 .person .what { color: var(--muted); font-size: 13px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
