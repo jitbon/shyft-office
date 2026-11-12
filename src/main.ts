@@ -50,6 +50,9 @@ import { Station } from './jam/station';
 import { DeskLookPanel } from './desk-look/panel';
 import { setSeason } from './surfaces';
 import { extraLight } from './light';
+import { PetsClient } from './pets';
+import { PetsPanel } from './pets-panel';
+import { drawMoodMark, drawPressX, drawReaction } from './pets-art';
 
 // Art checks in tools/e2e read the avatar painter from the page.
 if (location.search.includes('arthash')) (window as unknown as { __shyftArt: unknown }).__shyftArt = { makeAvatar, CATALOG };
@@ -104,6 +107,30 @@ const jamCard = new JamCard($('jamCard'), jamMixer, (m) => net.send(m));
 const jamClient = new JamClient({ send: (m) => net.send(m), mixer: jamMixer, station: new Station(jamMixer), player: new JamPlayer(jamCard.playerHost) });
 jamCard.bind(jamClient);
 jamClient.onChange = () => jamCard.render();
+// Pets and plants (feature 014): what exists, where each pet is, looking after them, and the 🐾 panel.
+const officeNow = () => Date.now() + session.clockOffset;
+const pets: PetsClient = new PetsClient({
+  send: (m) => net.send(m),
+  me: () => me,
+  player: (id) => (id === me.id ? me : others.get(id)),
+  players: () => [me, ...others.values()],
+  now: officeNow,
+  inMatch: () => arena.inMatch(),
+  notice: (text) => (petsPanel.isOpen ? petsPanel.showError(text) : notice(text, { key: 'pets', ttlMs: 3000 })),
+  changed: () => petsPanel.refresh(),
+  onSummary: (entries) => {
+    petsPanel.setSummary(entries);
+    const people = [...new Set(entries.map((e) => e.by))];
+    const who = people.length === 1 ? people[0] : `${people[0]} and ${people.length - 1} other${people.length > 2 ? 's' : ''}`;
+    notice(`${who} looked after your pet and plants while you were away.`, { key: 'pets-away', ttlMs: 8000, buttons: [{ label: 'See', onClick: () => petsPanel.show() }] });
+  },
+}, $('careMenu'));
+const petsPanel: PetsPanel = new PetsPanel($('petsPanel'), pets, {
+  send: (m) => net.send(m),
+  memberId: () => me.memberId,
+  hasDesk: () => !!myDeskId(),
+  now: officeNow,
+});
 const deskLookPanel = new DeskLookPanel($('deskLookPanel'), { send: (m) => net.send(m), deskId: () => myDeskId(), draft: (d) => (renderer2d.deskDraft = d) });
 const jamDucker = new Ducker();
 // Browsers keep sound off until the person has interacted with the page: the first click or key press starts it.
@@ -247,6 +274,15 @@ window.addEventListener('keydown', (e) => {
       return;
     }
   }
+  if (pets.menuKey(e)) {
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'KeyX' && !e.repeat && !builder.active && pets.pressX()) {
+    e.preventDefault();
+    if (pets.menuFor && mode === '3d') document.exitPointerLock(); // the menu has buttons, so free the mouse
+    return;
+  }
   if (arena.inMatch()) {
     // In a match, B is the shop (Build is closed) and K shows the scoreboard.
     if (e.code === 'KeyB' && !e.repeat) {
@@ -343,11 +379,14 @@ canvas.addEventListener('click', (e) => {
   if (mode === '3d') {
     if (document.pointerLockElement !== canvas) canvas.requestPointerLock();
     else if (arena.spectating()) arena.nextSpectate();
+    else if (!arena.inMatch() && clickCompanion3d()) return;
     else if (!arena.inMatch() && clickPlayerCard3d()) return;
     else arena.fire(me.a);
     return;
   }
-  // Top-down: clicking a desk opens its card, clicking elsewhere closes it.
+  // Top-down: a pet or plant first (its care menu), then a desk opens its card, and clicking elsewhere closes it.
+  const at = renderer2d.pointUnder(e.clientX, e.clientY);
+  if (pets.clickAt(at.x, at.y)) return;
   const t = renderer2d.tileUnder(e.clientX, e.clientY);
   const desk = deskAt(t.x + 0.5, t.y + 0.5);
   if (desk) openDeskCard(desk.id);
@@ -357,8 +396,17 @@ canvas.addEventListener('mousemove', (e) => {
   if (mode !== '2d' || builder.active) return;
   const t = renderer2d.tileUnder(e.clientX, e.clientY);
   hoverDesk = deskAt(t.x + 0.5, t.y + 0.5)?.id ?? null;
-  canvas.style.cursor = hoverDesk ? 'pointer' : '';
-  showPlayerCard(e.clientX, e.clientY);
+  const at = renderer2d.pointUnder(e.clientX, e.clientY);
+  const companion = pets.hitAt(at.x, at.y);
+  canvas.style.cursor = hoverDesk || companion ? 'pointer' : '';
+  if (companion && pets.fillCard($('playerCard'), companion.target)) {
+    const card = $('playerCard');
+    card.style.left = `${Math.min(e.clientX + 14, window.innerWidth - 220)}px`;
+    card.style.top = `${e.clientY + 14}px`;
+    card.hidden = false;
+  } else {
+    showPlayerCard(e.clientX, e.clientY);
+  }
 });
 canvas.addEventListener('mouseleave', () => showPlayerCard(null, null));
 
@@ -371,6 +419,29 @@ function fillPlayerCard(card: HTMLElement, who: Player) {
     Object.assign(document.createElement('div'), { textContent: `${statusIcon(st)} ${statusLabel(st)}`.trim() }),
     ...(note ? [Object.assign(document.createElement('div'), { className: 'sys', textContent: note })] : []),
   );
+}
+
+/** First person: the pet or plant nearest the crosshair, from the last frame. */
+let lastCompanions3d: { x: number; d: number; c: import('./pets').Companion }[] = [];
+/** First person: a click with a pet or plant under the crosshair opens its care menu (or says to walk closer, with its card). */
+function clickCompanion3d(): boolean {
+  const cx = canvas.clientWidth / 2;
+  const hit = lastCompanions3d.filter((l) => Math.abs(l.x - cx) < canvas.clientWidth * 0.08).sort((a, b) => a.d - b.d)[0];
+  if (!hit) return false;
+  pets.clicked(hit.c);
+  if (pets.menuFor) {
+    document.exitPointerLock();
+    return true;
+  }
+  const card = $('playerCard');
+  if (!pets.fillCard(card, hit.c.target)) return true;
+  card.style.left = `${Math.min(cx + 14, window.innerWidth - 220)}px`;
+  card.style.top = `${canvas.clientHeight / 2 + 14}px`;
+  card.hidden = false;
+  card3dAngle = me.a;
+  window.clearTimeout(card3dTimer);
+  card3dTimer = window.setTimeout(() => (card.hidden = true), 4000);
+  return true;
 }
 
 let card3dTimer = 0;
@@ -475,6 +546,11 @@ document.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) => {
     b.blur();
   };
 });
+
+$<HTMLButtonElement>('petsBtn').onclick = (e) => {
+  petsPanel.toggle();
+  (e.currentTarget as HTMLElement).blur();
+};
 
 $<HTMLButtonElement>('arenaBtn').onclick = (e) => {
   arenaPanel.toggle();
@@ -855,8 +931,8 @@ function updateHints() {
   $('help').innerHTML = arena.inMatch()
     ? '<b>WASD</b> move · <b>mouse</b> look · <b>click</b> fire · <b>B</b> shop (buy phase) · hold <b>K</b> scoreboard · <b>Tab</b> overview · <b>Enter</b> chat · Arena button to leave'
     : mode === '2d'
-      ? '<b>WASD</b>/arrows move · <b>Shift</b> run · <b>Space</b> jump · <b>Tab</b> first person · <b>Enter</b> chat · <b>+/-</b> zoom · <b>M</b> mic · <b>C</b> camera · <b>G</b> my desk · click a desk'
-      : '<b>WASD</b> move · <b>mouse</b> look around · <b>←→</b> turn · <b>Shift</b> run · <b>Space</b> jump · <b>Tab</b> top-down · <b>Enter</b> chat · <b>M</b> mic · <b>C</b> camera · <b>G</b> my desk · <b>F</b> desk menu';
+      ? '<b>WASD</b>/arrows move · <b>Shift</b> run · <b>Space</b> jump · <b>Tab</b> first person · <b>Enter</b> chat · <b>+/-</b> zoom · <b>M</b> mic · <b>C</b> camera · <b>G</b> my desk · click a desk · <b>X</b> pet or plant'
+      : '<b>WASD</b> move · <b>mouse</b> look around · <b>←→</b> turn · <b>Shift</b> run · <b>Space</b> jump · <b>Tab</b> top-down · <b>Enter</b> chat · <b>M</b> mic · <b>C</b> camera · <b>G</b> my desk · <b>F</b> desk menu · <b>X</b> pet or plant';
   updateLockHint();
 }
 
@@ -881,6 +957,7 @@ function sendState(force = false) {
 }
 
 function onMessage(msg: ServerMsg) {
+  if (pets.onMessage(msg)) return;
   switch (msg.t) {
     case 'welcome':
       me.id = msg.id;
@@ -909,6 +986,7 @@ function onMessage(msg: ServerMsg) {
       if (me.mic || me.cam) net.send({ t: 'media', mic: me.mic, cam: me.cam });
       others.clear();
       for (const p of msg.players) others.set(p.id, toPlayer(p));
+      pets.reset(msg.companions);
       renderPeople();
       setHelperStatus(msg.helper, msg.helperCooling);
       void afterWelcome(msg.layoutRev, msg.items ?? []);
@@ -1359,12 +1437,21 @@ function render(now: number) {
     roomView = room;
     refreshCallPanel(); // the desk or room view opens or closes
   }
+  pets.frame();
   if (mode === '2d') {
-    renderer2d.deskPresence = highlight && { tiles: highlight.tiles, mine: highlight.mine };
+    renderer2d.companions = pets.list;
     renderer2d.deskTags = deskTags(hoverDesk);
     renderer2d.arena = arenaFx2d();
+    renderer2d.deskPresence = highlight && { tiles: highlight.tiles, mine: highlight.mine };
     renderer2d.render(ctx, w, h, zoom, dpr, me, people, now);
+    const menuKey = pets.menuFor && JSON.stringify(pets.menuFor);
+    const open = menuKey && pets.list.find((c) => JSON.stringify(c.target) === menuKey);
+    if (open) {
+      const at = renderer2d.screenOf(open.x, open.y);
+      pets.placeMenu(at.x, at.y + 18);
+    }
   } else {
+    raycaster.companions = pets.list;
     raycaster.resize(w, h);
     raycaster.extraLight = extraLight(getWorld(), me.x, me.y, session.season, Date.now(), session.clockOffset, session.tzOffsetMin);
     // Jam Rooms carry a note mark on their label, whether or not you are inside.
@@ -1388,6 +1475,16 @@ function render(now: number) {
     const sx = w / dpr / raycaster.w, sy = h / dpr / raycaster.h;
     for (const m of raycaster.markerLabels) drawNameTag(ctx, m.text, m.x * sx, m.y * sy, 16, m.dot);
     lastLabels3d = labels.map((l) => ({ x: l.x * sx, player: l.player }));
+    lastCompanions3d = raycaster.companionLabels.map((l) => ({ x: l.x * sx, d: l.d, c: l.companion }));
+    // Pets' names, mood marks and reactions, and the "Press X" chip, over the first-person picture.
+    for (const l of raycaster.companionLabels) {
+      const c = l.companion, x = l.x * sx, bottom = l.bottom * sy, art = (l.unit * sy * c.size) / 32;
+      if (c.label && l.d < 8) drawNameTag(ctx, c.label, x, bottom + 14, 13);
+      if (c.mood) drawMoodMark(ctx, c.mood, now, x, bottom - 16 * art, art, c.seed);
+      if (c.reaction) drawReaction(ctx, c.reaction.action, c.reaction.t, x, bottom, art, c.reaction.grew);
+      if (c.chip || c.far) drawPressX(ctx, x, bottom - 20 * art, c.far ? 'Walk closer' : 'Press X');
+    }
+    if (pets.menuFor) pets.placeMenu(w / dpr / 2, h / dpr / 2 + 30);
     for (const l of labels) {
       const top = drawNameTag(ctx, l.player.name, l.x * sx, l.y * sy - 4, 18, l.player.status);
       const why = l.player === me ? null : whyNotText(me, l.player);

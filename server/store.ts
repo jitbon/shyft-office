@@ -4,6 +4,10 @@ import { DESKS, areaById, deskById, podById, type PodMode } from '../shared/map'
 import { MAX_MEMBER_ID, isUuid } from '../shared/member';
 import { clampDeskLook, type StoredDeskLook } from '../shared/desk-look';
 import type { AvatarChoice } from '../shared/protocol';
+import {
+  AWAY_MAX, MAX_COMPANION_RECORDS, MAX_PLANTS, PET_KINDS, PLANT_KINDS, cleanPetName, isCareAction, isPetColor, isPetKind, isPlantId, isPlantKind,
+  type CareAction, type PetColor, type PetKind, type PlantKind,
+} from '../shared/pets';
 
 export interface DeskClaim {
   memberId: string;
@@ -39,6 +43,55 @@ export interface StoredState {
   arenaEnabled?: boolean;
   /** Each member's desk look, kept with the member (not the desk), so it comes back with their next desk. An additive field. */
   deskLooks?: Record<string, StoredDeskLook>;
+  /** Each member's pet and plants (feature 014). An additive field. */
+  companions?: Record<string, CompanionRecord>;
+}
+
+/** One look-after: who (name, and member id, which never leaves the server), what and when. */
+export interface StoredCare {
+  by: string;
+  byMember?: string;
+  action: CareAction;
+  at: number;
+  /** In "while you were away" entries: the pet or plant's name then. */
+  name?: string;
+}
+
+export interface StoredPet {
+  kind: PetKind;
+  color: PetColor;
+  name: string;
+  adoptedAt: number;
+  /** Adopting counts as care. */
+  lastCareAt: number;
+  lastCare?: StoredCare;
+}
+
+export interface StoredPlant {
+  id: string;
+  kind: PlantKind;
+  name: string;
+  addedAt: number;
+  /** Only ever goes up. */
+  wateredDays: number;
+  /** The office day ('YYYY-MM-DD') of the last watering that counted toward growth. */
+  lastWaterDay?: string;
+  /** Placing a new plant counts as watering it. */
+  lastWateredAt: number;
+  lastCare?: StoredCare;
+  /** Where it stands at its owner's desk; absent when not placed. */
+  spot?: { deskId: string; x: number; y: number };
+}
+
+export interface CompanionRecord {
+  /** The owner's name when last seen, for while they are offline. */
+  ownerName: string;
+  pet?: StoredPet;
+  plants: StoredPlant[];
+  /** When the member's last connection closed; 0 while they are online (or have never left). */
+  lastSeen: number;
+  /** Care by others while they were away, newest first, at most AWAY_MAX. */
+  away: StoredCare[];
 }
 
 export interface StoredCharacter {
@@ -85,6 +138,60 @@ function readDeskLooks(raw: unknown): Record<string, StoredDeskLook> {
   }
   list.sort((a, b) => b[1].at - a[1].at);
   return Object.fromEntries(list.slice(0, MAX_DESK_LOOKS));
+}
+
+const time = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+
+function readCare(raw: unknown): StoredCare | undefined {
+  const c = raw as Partial<StoredCare> | null;
+  if (typeof c !== 'object' || c === null || !isCareAction(c.action)) return undefined;
+  return {
+    by: cleanPetName(c.by, 'Someone'),
+    ...(isUuid(c.byMember) ? { byMember: c.byMember } : {}),
+    action: c.action,
+    at: time(c.at),
+    ...(typeof c.name === 'string' ? { name: cleanPetName(c.name, 'it') } : {}),
+  };
+}
+
+/** Saved pets and plants worth keeping: real members only, every field checked again, the most recently seen MAX_COMPANION_RECORDS. */
+export function readCompanions(raw: unknown): Record<string, CompanionRecord> {
+  const list: [string, CompanionRecord][] = [];
+  for (const [id, r] of Object.entries((raw ?? {}) as Record<string, Partial<CompanionRecord> | null>)) {
+    if (!isUuid(id) || typeof r !== 'object' || r === null) continue;
+    const rec: CompanionRecord = { ownerName: String(r.ownerName ?? 'Member').slice(0, 24) || 'Member', plants: [], lastSeen: time(r.lastSeen), away: [] };
+    const p = r.pet as Partial<StoredPet> | undefined;
+    if (p && typeof p === 'object' && isPetKind(p.kind) && isPetColor(p.color)) {
+      const care = readCare(p.lastCare);
+      rec.pet = {
+        kind: p.kind, color: p.color, name: cleanPetName(p.name, PET_KINDS[p.kind].name),
+        adoptedAt: time(p.adoptedAt), lastCareAt: time(p.lastCareAt), ...(care ? { lastCare: care } : {}),
+      };
+    }
+    const ids = new Set<string>();
+    for (const q of Array.isArray(r.plants) ? (r.plants as Partial<StoredPlant>[]) : []) {
+      if (rec.plants.length >= MAX_PLANTS) break;
+      if (!q || typeof q !== 'object' || !isPlantId(q.id) || ids.has(q.id) || !isPlantKind(q.kind)) continue;
+      ids.add(q.id);
+      const care = readCare(q.lastCare);
+      const spot = q.spot as StoredPlant['spot'] | undefined;
+      rec.plants.push({
+        id: q.id, kind: q.kind, name: cleanPetName(q.name, PLANT_KINDS[q.kind].name),
+        addedAt: time(q.addedAt), wateredDays: Math.floor(time(q.wateredDays)), lastWateredAt: time(q.lastWateredAt),
+        ...(typeof q.lastWaterDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(q.lastWaterDay) ? { lastWaterDay: q.lastWaterDay } : {}),
+        ...(care ? { lastCare: care } : {}),
+        ...(spot && typeof spot.deskId === 'string' && Number.isInteger(spot.x) && Number.isInteger(spot.y) ? { spot: { deskId: spot.deskId, x: spot.x, y: spot.y } } : {}),
+      });
+    }
+    for (const a of Array.isArray(r.away) ? r.away : []) {
+      const care = readCare(a);
+      if (care && rec.away.length < AWAY_MAX) rec.away.push(care);
+    }
+    list.push([id.toLowerCase(), rec]);
+  }
+  // Online (0) first, then the most recently seen.
+  list.sort((a, b) => (a[1].lastSeen === 0 ? Infinity : a[1].lastSeen) > (b[1].lastSeen === 0 ? Infinity : b[1].lastSeen) ? -1 : 1);
+  return Object.fromEntries(list.slice(0, MAX_COMPANION_RECORDS));
 }
 
 /** Notices worth keeping: real members, each kind once per member, at most MAX_NOTICE. */
@@ -189,6 +296,8 @@ export function parseState(raw: unknown): StoredState {
   if (version === 4) {
     const looks = readDeskLooks(r.deskLooks);
     if (Object.keys(looks).length) out.deskLooks = looks;
+    const companions = readCompanions(r.companions);
+    if (Object.keys(companions).length) out.companions = companions;
   }
   return out;
 }

@@ -36,6 +36,8 @@ import { StateStore, loadState } from './store';
 import { loadCharacter } from './characters';
 import { Cooldown, RateWindow, type Limit } from './rate';
 import { DEFAULT_LOOK, validateLook } from '../shared/wardrobe';
+import { COMPANION_MESSAGES, Trail, type CompanionError } from '../shared/pets';
+import { CompanionBook, type PlantChange } from './companions';
 
 export interface ServerOptions {
   port: number;
@@ -119,6 +121,8 @@ const PER_SECOND = {
   fire: { count: 30 },
   /** Status preferences. */
   statusPrefs: { count: 4 },
+  /** Adopting, changing or placing a pet or plant: each is a broadcast and a save. */
+  companion: { count: 4 },
 } satisfies Record<string, Limit>;
 
 const cleanLook = (l: unknown): Look => validateLook(l, DEFAULT_LOOK);
@@ -140,6 +144,8 @@ interface Conn {
   autoMeeting: boolean;
   /** Whether the member is in a meeting right now, as of the last tick. */
   inMeeting: boolean;
+  /** Where this person has just walked: their pet follows it (feature 014). */
+  trail: Trail;
 }
 
 export function startServer(opts: ServerOptions): Promise<RunningServer> {
@@ -267,8 +273,9 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
   pruner.unref();
   validateOffice();
   const store = opts.dataDir ? new StateStore(opts.dataDir) : null;
+  const loaded = opts.dataDir ? loadState(opts.dataDir) : undefined;
   const office: OfficeState = new OfficeState(() => [...conns.values()].map((c) => c.p), {
-    state: opts.dataDir ? loadState(opts.dataDir) : undefined,
+    state: loaded,
     onChange: () => store?.save(office.persistState()),
   });
   const helper = new Helper({ drafter: opts.drafter, enabled: () => office.helperEnabled, timeoutMs: opts.helperTimeoutMs });
@@ -459,6 +466,58 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
   }, opts.clock?.seasonCheckMs ?? 3_600_000);
   seasonTimer.unref();
 
+  // ------------------------------------------------------------ pets and plants (feature 014)
+  const book = new CompanionBook({
+    records: loaded?.companions,
+    now: officeNow,
+    tzOffsetMin: () => -new Date(officeNow()).getTimezoneOffset(),
+    deskOf: (memberId) => office.deskOf(memberId),
+    // A pet follows its owner's oldest open tab, unless they are in a match or listening in a Jam Room: then it rests.
+    follower: (memberId) => {
+      let first: Conn | undefined;
+      for (const o of conns.values()) if (o.p.memberId === memberId && (!first || Number(o.p.id) < Number(first.p.id))) first = o;
+      if (!first || arena.isPlayer(first.p.id) || jam.roomOf(first.p.id) !== null) return undefined;
+      return { id: first.p.id, trail: first.trail, x: first.p.x, y: first.p.y };
+    },
+    online: () => new Set([...conns.values()].map((o) => o.p.memberId)),
+    onChange: () => office.save(),
+  });
+  office.companions = () => book.persist();
+  /** What each pet's view last said about where it is (following whom, or its rest spot), so a change is sent once. */
+  const petSigs = new Map<string, string>();
+  const petSig = (v: { follow?: string; rest: { x: number; y: number } }) => `${v.follow ?? ''}|${v.rest.x},${v.rest.y}`;
+  const broadcastPet = (owner: string) => {
+    const view = book.petView(owner);
+    if (!view) return;
+    petSigs.set(owner, petSig(view));
+    broadcast({ t: 'petUpsert', pet: view });
+  };
+  /** A plant changed: everyone sees placed plants; an unplaced one is only in its owner's panel. */
+  const sendPlant = (ch: PlantChange & { removed?: true }) => {
+    if (ch.removed) return broadcast({ t: 'plantGone', id: ch.plant.id });
+    const view = book.plantView(ch.owner, ch.plant);
+    if (view.spot) return broadcast({ t: 'plantUpsert', plant: view });
+    if (ch.wasPlaced) broadcast({ t: 'plantGone', id: ch.plant.id });
+    for (const o of conns.values()) if (o.p.memberId === ch.owner) send(o.ws, { t: 'plantUpsert', plant: view });
+  };
+  // Every link tick: plants follow desk changes, and a pet whose owner came, went, joined a match or a jam, or changed desk
+  // is told to everyone. Watching the result covers every way those can change.
+  // Links are also recomputed on every move, so this runs at most about five times a second.
+  const statusTick = links.beforeUpdate;
+  let companionsAt = 0;
+  links.beforeUpdate = () => {
+    statusTick();
+    const t = Date.now();
+    if (t - companionsAt < 150) return;
+    companionsAt = t;
+    for (const ch of book.reconcileDesks()) sendPlant(ch);
+    for (const view of book.views().pets) {
+      if (petSigs.get(view.owner) === petSig(view)) continue;
+      petSigs.set(view.owner, petSig(view));
+      broadcast({ t: 'petUpsert', pet: view });
+    }
+  };
+
   /** Desk looks: shown to everyone, for every claimed desk that has one. */
   const broadcastLooks = () => broadcast({ t: 'deskLooks', looks: office.looksByDesk() });
   /** The desk a look is checked against: the member's desk as the office has it now. */
@@ -583,7 +642,9 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         chosen: { kind: 'available' },
         autoMeeting: true,
         inMeeting: false,
+        trail: new Trail(),
       };
+      c.trail.push(p.x, p.y, officeNow());
       // A second tab of the same member starts with the status they chose in the first.
       const otherTab = p.memberId.startsWith('eph-') ? undefined : [...conns.values()].find((o) => o.p.memberId === p.memberId);
       if (otherTab) {
@@ -613,8 +674,14 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         objects: objects.list(),
         items: itemInfos(),
         ...(canBuild(c) ? { helper: helper.status(), ...(helper.retryAt() !== undefined && helper.status() === 'unavailable' ? { helperCooling: true } : {}) } : {}),
+        companions: book.views(p.memberId),
       });
       sendAdminState(c);
+      // Back after being away: once, who looked after their pet and plants meanwhile.
+      if (!otherTab && !p.memberId.startsWith('eph-')) {
+        const entries = book.arrived(p.memberId, p.name);
+        if (entries.length) send(ws, { t: 'careSummary', entries });
+      }
       // Someone who lost their desk when the office was redesigned or updated hears about it once, on their first join.
       if (otherTab) send(ws, { t: 'presence', id: p.id, status: p.status });
       const deskNotice = office.takeDeskNotice(p.memberId);
@@ -652,6 +719,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       const before = areaAt(me.x, me.y)?.id ?? null;
       me.x = nx;
       me.y = ny;
+      conn.trail.push(nx, ny, officeNow());
       // The speed is measured from a checkpoint that advances at most every 200 ms, so many small hops add up to no more than running.
       if (inMatch && Date.now() - conn.moveFrom.at >= 200) conn.moveFrom = { x: nx, y: ny, at: Date.now() };
       me.a = num(msg.a, -1e6, 1e6, me.a);
@@ -961,6 +1029,42 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       jam.handle(me.id, msg);
     } else if (msg.t === 'ink' || msg.t === 'inkClear' || msg.t === 'inkAllow') {
       handleInk(ws, me, msg);
+    } else if (msg.t === 'pet' || msg.t === 'plant') {
+      const refuse = (code: CompanionError) => send(ws, { t: 'companionError', code, message: COMPANION_MESSAGES[code] });
+      if (me.memberId.startsWith('eph-')) return refuse('not-member');
+      if (!within('companion', me.id)) return refuse('rate');
+      const member = { memberId: me.memberId, name: me.name };
+      if (msg.t === 'pet') {
+        const err =
+          msg.op === 'adopt' ? book.adopt(member, msg.kind, msg.color, msg.name)
+          : msg.op === 'edit' ? book.editPet(me.memberId, { name: msg.name, color: msg.color })
+          : msg.op === 'remove' ? book.removePet(me.memberId)
+          : 'bad';
+        if (err) return refuse(err);
+        if (msg.op === 'remove') {
+          petSigs.delete(me.memberId);
+          broadcast({ t: 'petGone', owner: me.memberId });
+        } else {
+          broadcastPet(me.memberId);
+        }
+      } else {
+        const op = msg.op;
+        const r =
+          op === 'add' ? book.addPlant(member, msg.kind, msg.name)
+          : op === 'place' || op === 'move' || op === 'unplace' || op === 'remove' || op === 'rename'
+            ? book.plantOp(me.memberId, op, msg.id, op === 'rename' ? msg.name : undefined)
+            : { error: 'bad' as const };
+        if ('error' in r) return refuse(r.error);
+        sendPlant(r);
+      }
+    } else if (msg.t === 'care') {
+      const r = book.care({ id: me.id, memberId: me.memberId, name: me.name, x: me.x, y: me.y, inMatch: arena.isPlayer(me.id) }, msg.target, msg.action);
+      if (!r.ok) return void send(ws, { t: 'companionError', code: r.code, message: COMPANION_MESSAGES[r.code] });
+      const target = 'pet' in msg.target ? { pet: msg.target.pet } : { plant: msg.target.plant };
+      broadcast({
+        t: 'care', target, action: msg.action, by: me.name, at: r.at, react: r.react,
+        ...(r.wateredDays !== undefined ? { wateredDays: r.wateredDays } : {}), ...(r.grew ? { grew: true } : {}),
+      });
     } else if (msg.t === 'rtc') {
       // Call setup only travels between people who are currently linked.
       if (rawLength > MAX_RTC_BYTES || !within('rtc', me.id, rawLength)) return;
@@ -1017,6 +1121,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
     jumpCooldown.forget(c.p.id);
     inkSlowCooldown.forget(c.p.id);
     shares.stop(c.p.id);
+    book.forgetCarer(c.p.id);
     sessions.delete(c.session);
     if (arena.isPlayer(c.p.id)) arena.leave(c.p.id); // the connection is already gone, so no one is teleported
     links.remove(c.p.id);
@@ -1027,7 +1132,10 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
     }
     // Two tabs of one browser share a member id: only forget the member when their last tab goes.
-    if (![...conns.values()].some((o) => o.p.memberId === c.p.memberId)) office.leave(c.p.memberId);
+    if (![...conns.values()].some((o) => o.p.memberId === c.p.memberId)) {
+      office.leave(c.p.memberId);
+      if (!c.p.memberId.startsWith('eph-')) book.departed(c.p.memberId);
+    }
     broadcast({ t: 'leave', id: c.p.id });
     broadcastOffice();
     links.update();

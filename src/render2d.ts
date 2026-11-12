@@ -3,6 +3,8 @@ import type { WorldObject } from '../shared/world';
 import { frameAt, viewCanvas } from './custom-objects';
 import { drawablesOf, isPictured, tileSignatures, type Drawable } from './drawables';
 import { flatPicture, itemPicture } from './item2d';
+import type { Companion } from './pets';
+import { drawMoodMark, drawPressX, drawReaction } from './pets-art';
 import { TILE, drawFurniture2D, drawTurned2D, drawWall2D, drawWelcomeMat, makeCanvas, withPalette, type Dir, type Texture } from './art';
 import { legacyPalette } from './finish';
 import { paletteFor } from './palette';
@@ -368,7 +370,15 @@ export class Renderer2D {
   deskPresence: { tiles: readonly { x: number; y: number }[]; mine: boolean } | null = null;
   /** The Customize desk panel's unsaved look: its picture of the desk space (a TILE-sized pixel canvas) at tile (x, y). Drawn dashed. */
   deskDraft: { x: number; y: number; w: number; h: number; picture: CanvasImageSource } | null = null;
+  /** Pets and plants to draw this frame, sorted in with the people (feature 014). */
+  companions: Companion[] = [];
   private view = { ox: 0, oy: 0, s: TILE, dpr: 1 };
+
+  /** Where a point in the office is on screen, in CSS pixels (the inverse of tileUnder). */
+  screenOf(x: number, y: number): { x: number; y: number } {
+    const { ox, oy, s, dpr } = this.view;
+    return { x: (ox + x * s) / dpr, y: (oy + y * s) / dpr };
+  }
 
   /** The desk space you are in: a strong fill over every tile and an edge along its outside (warm for your own, cool for another's). */
   private drawDeskSpace(ctx: CanvasRenderingContext2D, ox: number, oy: number, s: number, dpr: number, p: { tiles: readonly { x: number; y: number }[]; mine: boolean }) {
@@ -517,7 +527,22 @@ export class Renderer2D {
 
     const sorted = [...players].sort((a, b) => a.y - b.y);
     const clock = Date.now();
+    // Pets and plants are painted in the same far-to-near order as people, so whoever is in front covers the other.
+    const pets = [...this.companions].sort((a, b) => a.y - b.y);
+    let pi = 0;
+    const petsUpTo = (y: number) => {
+      for (; pi < pets.length && pets[pi].y <= y; pi++) {
+        const c = pets[pi];
+        const fx = ox + c.x * s, fy = oy + c.y * s;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+        ctx.beginPath();
+        ctx.ellipse(fx, fy, 7 * k, 3 * k, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.drawImage(c.canvas, Math.round(fx - (TILE / 2) * k), Math.round(fy - (TILE - 2) * k), TILE * k, TILE * k);
+      }
+    };
     for (const p of sorted) {
+      petsUpTo(p.y);
       const fx = ox + p.x * s, fy = oy + p.y * s;
       // Mid-jump the body rises up the screen and its shadow on the floor shrinks.
       const lift = hopHeight(p.jumpAt, clock) * s;
@@ -541,6 +566,7 @@ export class Renderer2D {
       ctx.drawImage(img, Math.round(fx - (TILE / 2) * k), Math.round(fy - lift - (TILE - 2) * k), TILE * k, TILE * k);
       ctx.globalAlpha = 1;
     }
+    petsUpTo(Infinity);
 
     if (this.arena) this.drawArenaFx(ctx, ox, oy, s, k);
 
@@ -577,6 +603,15 @@ export class Renderer2D {
 
     for (const tag of this.deskTags) {
       if (tag.show) drawNameTag(ctx, tag.text, (ox + tag.anchor.x * s) / dpr, (oy + (tag.anchor.y - 0.35) * s) / dpr, 16, tag.dot);
+    }
+
+    // Pets' names, mood marks, reactions, and the "Press X" chip.
+    for (const c of pets) {
+      const fx = (ox + c.x * s) / dpr, fy = (oy + c.y * s) / dpr, px = k / dpr;
+      if (c.label) drawNameTag(ctx, c.label, fx, fy + 15, 13);
+      if (c.mood) drawMoodMark(ctx, c.mood, now, fx, fy - 14 * px, px, c.seed);
+      if (c.reaction) drawReaction(ctx, c.reaction.action, c.reaction.t, fx, fy, px, c.reaction.grew);
+      if (c.chip || c.far) drawPressX(ctx, fx, fy - 18 * px, c.far ? 'Walk closer' : 'Press X');
     }
 
     for (const p of sorted) {

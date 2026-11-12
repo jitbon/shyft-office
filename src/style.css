@@ -747,3 +747,42 @@ body:has(#viewToggle [data-mode='2d'].on) #arenaHud .ahTop { top: 70px; }
 #jamCard .jamMessage { font-size: 12px; color: var(--accent); min-height: 0; }
 #jamCard.folded { gap: 2px; }
 #jamCard.folded .jamBody > :not(.jamPlayerHost):not(.jamClick) { display: none; }
+
+/* Pets and plants (feature 014) */
+#petsPanel {
+  right: 16px;
+  top: 70px;
+  width: min(340px, calc(100vw - 32px));
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 20;
+}
+#petsPanel .head { display: flex; justify-content: space-between; align-items: center; font: 800 14px/1.4 var(--font); }
+#petsPanel .head button { padding: 2px 8px; }
+#petsPanel .sys { font-size: 12px; color: var(--muted); }
+#petsPanel .bwarn { font-size: 13px; color: var(--accent); }
+#petsPanel input { min-width: 0; flex: 1; }
+.petSection { font: 800 12px/1.4 var(--font); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-top: 4px; }
+.petRow { display: flex; align-items: center; gap: 8px; }
+.petInfo { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.petPic { image-rendering: pixelated; flex: none; background: rgba(255, 255, 255, 0.04); border-radius: 6px; }
+.petGrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.petTile { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border: 2px solid transparent; border-radius: 8px; background: rgba(255, 255, 255, 0.04); font-size: 12px; }
+.petTile.on { border-color: var(--accent); }
+.petDots { display: flex; gap: 4px; }
+.petDot { padding: 1px; border: 2px solid transparent; border-radius: 6px; background: transparent; }
+.petDot.on { border-color: var(--accent); }
+.petBtns { display: flex; flex-wrap: wrap; gap: 4px; }
+.petBtns button, #petsPanel .petDanger { font-size: 12px; padding: 2px 8px; }
+.petDanger { align-self: flex-start; background: transparent; border: 1px solid var(--line); }
+.petForm { display: flex; flex-direction: column; gap: 6px; }
+.petAway { display: flex; flex-direction: column; gap: 2px; font-size: 13px; padding: 6px 8px; border-radius: 8px; background: rgba(241, 196, 83, 0.12); }
+#careMenu { z-index: 31; width: 220px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+#careMenu .careHead .sys { font-size: 12px; color: var(--muted); }
+#careMenu .careActs { display: flex; gap: 4px; }
+#careMenu .careActs button { flex: 1; padding: 4px 6px; font-size: 12px; }
+#careMenu kbd { font: 800 10px/1 var(--font); padding: 1px 4px; border-radius: 3px; background: rgba(0, 0, 0, 0.3); }
+#petsPanel button:disabled { opacity: 0.45; cursor: default; }

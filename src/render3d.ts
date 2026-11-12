@@ -20,6 +20,7 @@ import { hopHeight } from '../shared/jump';
 import { DIM_ALPHA, dims } from '../shared/status';
 import { horizonRow } from './look';
 import { walkFrame, type Player } from './types';
+import type { Companion } from './pets';
 
 const FACE_INDEX = { n: 0, e: 1, s: 2, w: 3 } as const;
 const PLANE = 0.66; // camera plane half-width -> ~67 degree field of view
@@ -38,6 +39,7 @@ interface Sprite {
   y: number;
   art: SpriteArt;
   player?: Player;
+  companion?: Companion;
 }
 
 export interface Label {
@@ -106,6 +108,10 @@ export class Raycaster {
   private meshTheme: string[] = [];
   /** Extra tint multiplied onto the theme's light: time of day and season. Set by the caller before each render. */
   extraLight = { r: 1, g: 1, b: 1 };
+  /** Pets and plants to draw this frame (feature 014). */
+  companions: Companion[] = [];
+  /** Filled by each render: where each visible pet or plant landed on the (small) framebuffer, and how far it is. */
+  companionLabels: { x: number; y: number; bottom: number; unit: number; d: number; companion: Companion }[] = [];
 
   constructor() {
     [this.canvas, this.ctx] = makeCanvas(1, 1);
@@ -300,7 +306,11 @@ export class Raycaster {
       const art = { tex: p.avatar.tex[dir][walkFrame(p)], w: AVATAR_SIZE, h: AVATAR_SIZE };
       sprites.push({ x: p.x, y: p.y, art, player: p, d: (p.x - px) ** 2 + (p.y - py) ** 2 });
     }
+    for (const c of this.companions) {
+      sprites.push({ x: c.x, y: c.y, art: { tex: c.tex, w: c.size, h: c.size }, companion: c, d: (c.x - px) ** 2 + (c.y - py) ** 2 });
+    }
     sprites.sort((a, b) => b.d - a.d);
+    this.companionLabels = [];
 
     const labels: Label[] = [];
     const invDet = 1 / (planeX * dirY - dirX * planeY);
@@ -308,7 +318,7 @@ export class Raycaster {
       const dx = s.x - px, dy = s.y - py;
       const tX = invDet * (dirY * dx - dirX * dy);
       const tY = invDet * (-planeY * dx + planeX * dy);
-      if (tY <= 0.15) continue;
+      if (tY <= 0.15 || (s.companion && tY < 0.5)) continue; // a pet at your feet is seen through, not as a wall of fur
       const screenX = (w / 2) * (1 + tX / tY);
       const unit = K / tY;
       const sw = s.art.w * unit, sh = s.art.h * unit;
@@ -327,6 +337,13 @@ export class Raycaster {
           const ty = Math.min(tex.h - 1, Math.floor(((y - top) * tex.h) / sh));
           const c = tex.data[ty * tex.w + tx];
           if (c >>> 24 > 127) pix[y * w + x] = faint ? fade(pix[y * w + x], lit(c, f), DIM_ALPHA) : lit(c, f);
+        }
+      }
+      if (s.companion) {
+        const cx = Math.round(screenX);
+        const mid = Math.min(h - 1, Math.max(0, Math.round(bottom - sh / 4)));
+        if (cx >= 0 && cx < w && tY < depth[mid * w + cx] + 0.3 && tY < 12) {
+          this.companionLabels.push({ x: screenX, y: bottom - sh / 2, bottom, unit, d: tY, companion: s.companion });
         }
       }
       if (s.player) {

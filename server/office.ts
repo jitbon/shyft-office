@@ -64,6 +64,8 @@ export class OfficeState {
   inArena: (playerId: string) => boolean = () => false;
   /** Ids of the players in a match, for the link rules. */
   matchPlayers: () => ReadonlySet<string> = () => new Set();
+  /** Members' pets and plants, kept by the server's CompanionBook and saved with everything else. */
+  companions: () => StoredState['companions'] = () => undefined;
 
   constructor(
     private players: () => Iterable<OfficePlayer>,
@@ -131,6 +133,10 @@ export class OfficeState {
       characters: this.characters,
       ...(this.arenaEnabled ? {} : { arenaEnabled: false }),
       ...(this.deskLooks.size ? { deskLooks: Object.fromEntries(this.deskLooks) } : {}),
+      ...(() => {
+        const companions = this.companions();
+        return companions ? { companions } : {};
+      })(),
     };
   }
 

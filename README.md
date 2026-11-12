@@ -85,6 +85,14 @@ other than localhost the browser will not allow the camera, though chat and walk
   *Outfits* tab has 20+ whole-figure costumes grouped by season (snowman, Santa, scarecrow, zombie, leprechaun and
   more, all available all year), and **Back to my character** returns to the parts underneath. Members' characters
   are saved on the server and follow them to any device; guests' stay in their browser. Custom sheets are unchanged.
+- **Pets and plants.** Open **🐾 Pets** to adopt a pet (a cat, dog, rabbit or bird, in three colors, with a name) and
+  to grow up to 3 plants (sunflower, tulip, cactus, fern) at your claimed desk. Your pet follows you around, and naps at
+  your desk (or the pet corner near the entrance) while you're away, in a match or in a Jam Room. Anyone, guests included,
+  can stand next to a pet or plant and press **X** (or click it) to **Pet**, **Feed**, **Play** or **Water**; everyone
+  nearby sees the reaction. Pets are happy for 2 hours after any care, then content, and a little sleepy and hungry after
+  a day without any. Plants grow from Seedling to Sprout, Bud and Bloom over 1, 3 and 5 days of watering, and droop a
+  little after a day without water. Nothing ever dies, shrinks or runs away. When you come back, the panel tells you who
+  looked after them while you were gone. Pets and plants are members' own: guests can look after them but not own one.
 
 ### Controls
 
@@ -98,6 +106,7 @@ other than localhost the browser will not allow the camera, though chat and walk
 | Chat | Enter (to *Nearby* or the whole office) | Enter |
 | Mic / camera | M / C | M / C |
 | Desk | click a desk · G walks to yours | F opens the desk in front of you · G |
+| Look after a pet or plant | stand next to it: X or click, then 1–3 | stand next to it: X or click, then 1–3 |
 | Do Not Disturb | Ctrl/⌘+U | Ctrl/⌘+U |
 | Zoom | +/- or scroll | n/a |
 | Arena (in a match) | overview only: no moving or firing | click fires · B shop · hold K scoreboard |

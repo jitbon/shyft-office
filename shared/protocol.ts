@@ -1,6 +1,7 @@
 import type { DeskLook, DeskLookError } from './desk-look';
 import type { CustomObject } from './objects';
 import type { Season } from './season';
+import type { CareAction, CareTarget, CompanionError, PetColor, PetKind, PetView, PlantKind, PlantView } from './pets';
 
 /** The light index of a studio item: enough to list it; the full design comes from `GET /api/items`. */
 export interface ItemInfo {
@@ -194,6 +195,16 @@ export type ClientMsg =
   | { t: 'jamFail'; id: string }
   /** Set (or with null, reset) the look of the desk the sender holds. */
   | { t: 'deskLook'; look: DeskLook | null }
+  /** Pets and plants (members only): adopt, change or send away your pet. */
+  | { t: 'pet'; op: 'adopt'; kind: PetKind; color: PetColor; name: string }
+  | { t: 'pet'; op: 'edit'; name?: string; color?: PetColor }
+  | { t: 'pet'; op: 'remove' }
+  /** Add, place, move, take back, rename or remove one of your plants. */
+  | { t: 'plant'; op: 'add'; kind: PlantKind; name: string }
+  | { t: 'plant'; op: 'place' | 'move' | 'unplace' | 'remove'; id: string }
+  | { t: 'plant'; op: 'rename'; id: string; name: string }
+  /** Look after a pet (by its owner's member id) or a plant; anyone standing next to it. */
+  | { t: 'care'; target: CareTarget; action: CareAction }
   | ({ t: 'admin' } & AdminOp);
 
 export type ServerMsg =
@@ -225,7 +236,22 @@ export type ServerMsg =
       helper?: 'off' | 'unavailable' | 'on';
       /** With `helper: 'unavailable'`: the service is set up but just failed, so it is worth trying again soon. */
       helperCooling?: boolean;
+      /** Every pet, every placed plant, and this member's own unplaced plants. */
+      companions?: { pets: PetView[]; plants: PlantView[] };
     }
+  /** A pet was adopted or changed (name, color, following or resting, last care). */
+  | { t: 'petUpsert'; pet: PetView }
+  | { t: 'petGone'; owner: string }
+  /** A plant was added or changed; to everyone when it is placed, else only to its owner. */
+  | { t: 'plantUpsert'; plant: PlantView }
+  /** A plant was removed, or is no longer placed in the office. */
+  | { t: 'plantGone'; id: string }
+  /** Someone looked after a pet or plant. `react: false` when it came too soon after the last one to play a second reaction. */
+  | { t: 'care'; target: CareTarget; action: CareAction; by: string; at: number; react: boolean; wateredDays?: number; grew?: boolean }
+  /** To a returning owner, once: who looked after their pet and plants while they were away (newest first). */
+  | { t: 'careSummary'; entries: { by: string; action: CareAction; name: string; at: number }[] }
+  /** Why a pet, plant or care message was refused; only to the sender. */
+  | { t: 'companionError'; code: CompanionError; message: string }
   | { t: 'join'; player: PlayerState }
   | { t: 'leave'; id: string }
   | ({ t: 'state'; id: string } & Pose)

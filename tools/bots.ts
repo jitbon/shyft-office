@@ -1,5 +1,7 @@
-// Load check: `npm run bots -- --count 25 --groups 5x5 [--url ws://host:3001/ws]`
+// Load check: `npm run bots -- --count 25 --groups 5x5 [--pets] [--url ws://host:3001/ws]`
 //
+// With --pets each bot also adopts a pet (cycling the kinds and colors), so the server and any browser watching have
+// a pet following every bot (feature 014's scale check: 50 pets, `--groups 7x7 --pets`).
 // Joins headless players, walks each to its group's spot, and checks that every player is linked to exactly
 // the others in their group. Without --url it starts its own server so it can also check how long the
 // server takes to recompute everyone's links (the budget is 20 ms at 25 players, SC-006).
@@ -72,6 +74,10 @@ async function connect(url: string, n: number, group: number): Promise<Bot> {
   const join: ClientMsg = { t: 'join', name: `Bot ${n}`, look, avatar: { kind: 'built-in', look }, memberId: crypto.randomUUID() };
   ws.send(JSON.stringify(join));
   while (!bot.id) await sleep(10);
+  if (args.includes('--pets')) {
+    const kinds = ['cat', 'dog', 'rabbit', 'bird'] as const;
+    ws.send(JSON.stringify({ t: 'pet', op: 'adopt', kind: kinds[n % 4], color: (n % 3) as 0 | 1 | 2, name: `Pet ${n}` } satisfies ClientMsg));
+  }
   return bot;
 }
 
